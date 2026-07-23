@@ -115,6 +115,11 @@
 - [x] 引擎內部調整：ResumeData 加 seedAfterComplete、FileStorage.recheck 不建空檔、start() 接 recheck、onDownloadComplete 依 seedAfter 決定做種/停止、TorrentSession.fileProgress()、BtClient.remove()
 - [x] 測試：facade 端到端（完成刪 .bt4j、做種保留 .bt4j、同種驗證、restore 掃描、recheck 救回半成品）共 149 tests
 
+## 改進項
+
+- [x] choke 演算法：標準 BitTorrent choke（`DefaultTorrentSession.runChokeRound`）——固定上傳槽 4（含 1 optimistic）、每 10s 重評、依「近期速率」tit-for-tat 排序（下載中依 bytesFromPeer、做種依 bytesToPeer）、每 30s 隨機輪換 optimistic unchoke、平手時 hysteresis 偏好已 unchoke 者避免 flapping；interest 變動/peer 斷線即時重評；uploadRateLimit(0) 時全 choke。測試 `ChokeAlgorithmTest`（10 leecher 同時只 unchoke ≤4）。
+- [x] 修 `stats()` 速率顯示 bug（每 getter 呼叫重設基準 → 改 0.5s 取樣快取）
+
 ## 待決（實作前要拍板）
 
 - [x] 全域限速（上傳/下載頻寬）：已決定實作（見 M9）

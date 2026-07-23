@@ -60,6 +60,12 @@ final class DefaultTorrentSession implements TorrentSession {
     private static final int PIPELINE_DEPTH = 16;
     /** 單一上傳 block 的長度上限（防惡意 Request 要求超大區塊）。 */
     private static final int MAX_UPLOAD_BLOCK = 128 * 1024;
+    /** 上傳槽數：同時 unchoke 的 peer 數（含 1 個 optimistic 槽）。 */
+    private static final int UPLOAD_SLOTS = 4;
+    /** choke 重新評估週期。 */
+    private static final long CHOKE_INTERVAL_MILLIS = 10_000;
+    /** 每幾個 choke 週期輪換一次 optimistic unchoke（10s × 3 = 30s）。 */
+    private static final int OPTIMISTIC_EVERY_ROUNDS = 3;
 
     private final InfoHash infoHash;
     private final PeerId peerId;
@@ -101,6 +107,12 @@ final class DefaultTorrentSession implements TorrentSession {
     private volatile Thread connectorThread;
     private volatile Thread dhtThread;
     private volatile Thread pexThread;
+    private volatile Thread chokeThread;
+
+    // choke 演算法狀態（由 chokeLock 保護）
+    private final Object chokeLock = new Object();
+    private volatile PeerWorker optimisticPeer;
+    private int chokeRoundCounter;
 
     // 速率計算：每 ≥0.5 秒才重新取樣一次差分，避免同一輪多個 getter 各自呼叫 stats()
     // 把基準重設在幾微秒的區間內、算出 0 或雜訊速率。
@@ -320,6 +332,92 @@ final class DefaultTorrentSession implements TorrentSession {
         }
         startDhtLoop();
         startPexLoop();
+        chokeThread = Thread.ofVirtual().name("bt4j-choke-" + infoHash.hex()).start(this::chokeLoop);
+    }
+
+    // ---- choke 演算法（BEP 3 建議 + optimistic unchoke）----
+
+    private void chokeLoop() {
+        while (isActive()) {
+            try {
+                Thread.sleep(CHOKE_INTERVAL_MILLIS);
+            } catch (InterruptedException e) {
+                return;
+            }
+            runChokeRound(true);
+        }
+    }
+
+    /**
+     * 重新決定 unchoke 哪些 peer。
+     * 固定 {@value #UPLOAD_SLOTS} 個上傳槽：其中前幾個依「近期速率」（tit-for-tat）給最有貢獻的 peer，
+     * 保留 1 個 optimistic 槽每 {@value #OPTIMISTIC_EVERY_ROUNDS} 個週期隨機輪換（用來發掘新 peer、啟動互惠）。
+     *
+     * @param periodic true = 週期呼叫（重新取樣速率 + 輪換 optimistic）；false = interest 變動時的即時重評
+     */
+    private void runChokeRound(boolean periodic) {
+        synchronized (chokeLock) {
+            if (!canUpload()) {
+                for (PeerWorker worker : workers.values()) {
+                    if (!worker.connection.amChoking()) {
+                        worker.connection.send(new PeerMessage.Choke());
+                    }
+                }
+                return;
+            }
+            boolean seeding = state == SessionState.SEEDING;
+            List<PeerWorker> interested = new ArrayList<>();
+            for (PeerWorker worker : workers.values()) {
+                if (worker.downloadMode && worker.connection.peerInterested()) {
+                    interested.add(worker);
+                }
+            }
+
+            if (periodic) {
+                // 以本週期內的位元組差分作為排序用的「近期速率」
+                for (PeerWorker worker : workers.values()) {
+                    long current = seeding ? worker.bytesToPeer.get() : worker.bytesFromPeer.get();
+                    worker.recentRate = current - worker.lastRoundBytes;
+                    worker.lastRoundBytes = current;
+                }
+                if (chokeRoundCounter++ % OPTIMISTIC_EVERY_ROUNDS == 0) {
+                    optimisticPeer = interested.isEmpty() ? null
+                            : interested.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(interested.size()));
+                }
+            }
+
+            // 依近期速率遞減排序；平手時偏好目前已 unchoke 的 peer（hysteresis，避免 flapping）
+            interested.sort((a, b) -> {
+                int byRate = Long.compare(b.recentRate, a.recentRate);
+                if (byRate != 0) {
+                    return byRate;
+                }
+                boolean aUnchoked = !a.connection.amChoking();
+                boolean bUnchoked = !b.connection.amChoking();
+                return aUnchoked == bUnchoked ? 0 : (aUnchoked ? -1 : 1);
+            });
+            java.util.Set<PeerWorker> unchoke = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            int regularSlots = Math.max(1, UPLOAD_SLOTS - 1);
+            for (PeerWorker worker : interested) {
+                if (unchoke.size() >= regularSlots) {
+                    break;
+                }
+                unchoke.add(worker);
+            }
+            PeerWorker optimistic = optimisticPeer;
+            if (optimistic != null && interested.contains(optimistic)) {
+                unchoke.add(optimistic); // optimistic 槽（可能讓總數達 UPLOAD_SLOTS）
+            }
+
+            for (PeerWorker worker : workers.values()) {
+                boolean shouldUnchoke = unchoke.contains(worker);
+                if (shouldUnchoke && worker.connection.amChoking()) {
+                    worker.connection.send(new PeerMessage.Unchoke());
+                } else if (!shouldUnchoke && !worker.connection.amChoking()) {
+                    worker.connection.send(new PeerMessage.Choke());
+                }
+            }
+        }
     }
 
     /** 週期性對支援 ut_pex 的 peer 交換 peer 清單（BEP 11）；private torrent 不啟用。 */
@@ -564,6 +662,11 @@ final class DefaultTorrentSession implements TorrentSession {
         if (px != null) {
             px.interrupt();
         }
+        Thread ch = chokeThread;
+        chokeThread = null;
+        if (ch != null) {
+            ch.interrupt();
+        }
     }
 
     // ---- tracker announce ----
@@ -671,6 +774,11 @@ final class DefaultTorrentSession implements TorrentSession {
         final Set<Integer> allowedFast = ConcurrentHashMap.newKeySet();
         final boolean downloadMode;
         private volatile boolean peerFast;
+        // choke 演算法用的 per-peer 統計
+        final AtomicLong bytesFromPeer = new AtomicLong(); // 從此 peer 下載的位元組（leech 排序依據）
+        final AtomicLong bytesToPeer = new AtomicLong();   // 上傳給此 peer 的位元組（seed 排序依據）
+        volatile long lastRoundBytes;                       // 上一 choke 週期的基準
+        volatile long recentRate;                           // 本週期差分（排序用）
 
         PeerWorker(PeerAddress address) {
             Metainfo meta = metainfo;
@@ -747,12 +855,9 @@ final class DefaultTorrentSession implements TorrentSession {
                     allowedFast.add(piece);
                     requestAllowedFast(piece);
                 }
-                // ---- 上傳路徑 ----
-                case PeerMessage.Interested() -> {
-                    if (canUpload()) {
-                        conn.send(new PeerMessage.Unchoke());
-                    }
-                }
+                // ---- 上傳路徑：由 choke 演算法決定是否 unchoke ----
+                case PeerMessage.Interested() -> runChokeRound(false);      // interest 變動即時重評
+                case PeerMessage.NotInterested() -> runChokeRound(false);   // 釋出槽給其他 peer
                 case PeerMessage.Request(int piece, int begin, int length) -> serveBlock(conn, piece, begin, length);
                 default -> {
                     // HaveNone（peerBitfield 已清空）、SuggestPiece 等：忽略
@@ -763,9 +868,13 @@ final class DefaultTorrentSession implements TorrentSession {
         @Override
         public void onClosed(PeerConnection conn, IOException error) {
             workers.remove(conn.address());
+            if (optimisticPeer == this) {
+                optimisticPeer = null;
+            }
             if (downloadMode && picker != null) {
                 abandonOutstanding();
                 picker.onPeerGone(conn.peerBitfield());
+                runChokeRound(false); // 釋出的上傳槽重新分配
             }
         }
 
@@ -818,6 +927,7 @@ final class DefaultTorrentSession implements TorrentSession {
             outstanding.remove(new BlockRequest(pieceIndex, begin, data.length));
             downloadLimiter.acquire(data.length); // 下載限速：延後讀迴圈 → TCP 背壓
             downloadedBytes.addAndGet(data.length);
+            bytesFromPeer.addAndGet(data.length); // choke 演算法：tit-for-tat 排序依據
             // 記錄此 piece 由哪些 peer 貢獻，供驗證失敗時追責
             pieceContributors.computeIfAbsent(pieceIndex, k -> ConcurrentHashMap.newKeySet())
                     .add(connection.address());
@@ -879,6 +989,7 @@ final class DefaultTorrentSession implements TorrentSession {
             uploadLimiter.acquire(length); // 上傳限速
             conn.send(new PeerMessage.Piece(pieceIndex, begin, data));
             uploadedBytes.addAndGet(length);
+            bytesToPeer.addAndGet(length); // choke 演算法：做種時的排序依據
             LOG.log(Level.TRACE, () -> "uploaded block piece=" + pieceIndex + " begin=" + begin + " -> " + conn.address());
         }
 
