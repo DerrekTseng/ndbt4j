@@ -112,6 +112,41 @@ class FileStorageTest {
     }
 
     @Test
+    void concurrentWriteAndVerifyAcrossPieces(@TempDir Path tmp) throws Exception {
+        // Many pieces written and verified concurrently from separate threads: exercises the lock-free SHA-1
+        // path in verifyPiece (hashing runs outside the storage monitor) and must still assemble byte-perfectly.
+        byte[] content = TorrentFixtures.randomBytes(64 * PIECE_LENGTH + 5000, 77); // 65 pieces
+        Metainfo meta = TorrentFixtures.singleFile("cc.bin", content, PIECE_LENGTH, "http://t/a");
+        try (FileStorage storage = new FileStorage(meta, PieceSelection.of(meta, Set.of()), tmp)) {
+            int pieces = meta.pieceCount();
+            var errors = new java.util.concurrent.ConcurrentLinkedQueue<Throwable>();
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var threads = new java.util.ArrayList<Thread>();
+            for (int p = 0; p < pieces; p++) {
+                final int piece = p;
+                threads.add(Thread.ofVirtual().start(() -> {
+                    try {
+                        start.await();
+                        writePiece(storage, meta, content, piece);
+                        if (!storage.verifyPiece(piece)) {
+                            errors.add(new AssertionError("piece " + piece + " failed verification"));
+                        }
+                    } catch (Throwable t) {
+                        errors.add(t);
+                    }
+                }));
+            }
+            start.countDown();
+            for (Thread t : threads) {
+                t.join();
+            }
+            assertTrue(errors.isEmpty(), () -> "concurrent verify errors: " + errors);
+            assertTrue(storage.completedPieces().isComplete());
+            assertArrayEquals(content, Files.readAllBytes(tmp.resolve("cc.bin")));
+        }
+    }
+
+    @Test
     void recheckRestoresCompletedPiecesFromDisk(@TempDir Path tmp) throws IOException {
         byte[] content = TorrentFixtures.randomBytes(40000, 31); // 3 pieces
         Metainfo meta = TorrentFixtures.singleFile("r.bin", content, PIECE_LENGTH, "http://t/a");

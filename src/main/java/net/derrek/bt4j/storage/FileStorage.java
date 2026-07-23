@@ -77,21 +77,38 @@ public final class FileStorage implements Storage {
     }
 
     @Override
-    public synchronized boolean verifyPiece(int pieceIndex) throws IOException {
-        if (completed.get(pieceIndex)) {
-            return true;
+    public boolean verifyPiece(int pieceIndex) throws IOException {
+        byte[] buffer;
+        synchronized (this) {
+            if (completed.get(pieceIndex)) {
+                return true;
+            }
+            // Detach the buffer from the shared map so no concurrent write() (e.g. an endgame duplicate block)
+            // can mutate the array while we hash it. Each completed piece is handed here exactly once by the
+            // picker, so there is no competing verifyPiece for this same index.
+            buffer = pieceBuffers.remove(pieceIndex);
+            if (buffer == null) {
+                throw new IllegalStateException("piece " + pieceIndex + " has no data to verify");
+            }
         }
-        byte[] buffer = pieceBuffers.get(pieceIndex);
-        if (buffer == null) {
-            throw new IllegalStateException("piece " + pieceIndex + " has no data to verify");
+        // SHA-1 is CPU-bound over a now-private buffer; run it OUTSIDE the storage monitor so other peers'
+        // block writes and other pieces' verifications proceed concurrently instead of serializing behind it.
+        boolean ok = java.util.Arrays.equals(sha1(buffer), metainfo.pieceHash(pieceIndex));
+        synchronized (this) {
+            // Drop any buffer a late endgame-duplicate write() may have recreated for this piece while we hashed.
+            pieceBuffers.remove(pieceIndex);
+            if (!ok) {
+                LOG.log(System.Logger.Level.DEBUG, () -> "piece " + pieceIndex + " failed SHA-1 verification, discarded for re-download");
+                return false;
+            }
+            if (completed.get(pieceIndex) || closed) {
+                // Already committed by a prior call, or the storage is closing: do not persist. Since completed
+                // is left unset while closing, a resume re-fetches this piece rather than trusting a partial write.
+                return true;
+            }
+            writeVerifiedPiece(pieceIndex, buffer);
+            completed.set(pieceIndex);
         }
-        pieceBuffers.remove(pieceIndex);
-        if (!java.util.Arrays.equals(sha1(buffer), metainfo.pieceHash(pieceIndex))) {
-            LOG.log(System.Logger.Level.DEBUG, () -> "piece " + pieceIndex + " failed SHA-1 verification, discarded for re-download");
-            return false;
-        }
-        writeVerifiedPiece(pieceIndex, buffer);
-        completed.set(pieceIndex);
         LOG.log(System.Logger.Level.TRACE, () -> "piece " + pieceIndex + " verified and written to disk");
         return true;
     }
