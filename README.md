@@ -104,10 +104,18 @@ bt.deleteJob(task);   // 只刪除 .bt4j，保留已下載的資料檔案
 Bt bt = Bt.builder()
         .listenPort(6881)              // TCP listen port（同時作 DHT UDP port）；0 = 系統指派
         .dhtEnabled(true)              // DHT（預設開）
-        .downloadRateLimit(2_000_000)  // 下載上限 2 MB/s（0 = 不限）
-        .uploadRateLimit(500_000)      // 上傳上限 500 KB/s（0 = 不限）
+        .downloadRateLimit(2_000_000)  // 下載上限 2 MB/s（<=0 = 不限）
+        .uploadRateLimit(500_000)      // 上傳上限 500 KB/s
         .maxPeersPerTorrent(50)        // 每 torrent 最大連線數
         .build();
+```
+
+上傳限速有特殊語意：
+
+```java
+.uploadRateLimit(500_000)  // > 0：限制在該速率（500 KB/s）
+.uploadRateLimit(-1)       // < 0：不限速（預設）
+.uploadRateLimit(0)        // = 0：完全不上傳（下載/做種期間對 peer 保持 choke、拒絕 request）
 ```
 
 ---

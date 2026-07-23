@@ -1,5 +1,6 @@
 package net.derrek.bt4j.util;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
@@ -7,15 +8,23 @@ import org.junit.jupiter.api.Test;
 class RateLimiterTest {
 
     @Test
-    void unlimitedReturnsImmediately() {
-        RateLimiter limiter = new RateLimiter(0);
+    void negativeMeansUnlimited() {
+        RateLimiter limiter = new RateLimiter(-1);
         assertTrue(limiter.isUnlimited());
+        assertFalse(limiter.isBlocked());
         long start = System.nanoTime();
         for (int i = 0; i < 1000; i++) {
             limiter.acquire(1_000_000);
         }
         long elapsedMs = (System.nanoTime() - start) / 1_000_000;
         assertTrue(elapsedMs < 100, "不限速應幾乎不耗時，實際 " + elapsedMs + "ms");
+    }
+
+    @Test
+    void zeroMeansBlocked() {
+        RateLimiter limiter = new RateLimiter(0);
+        assertTrue(limiter.isBlocked());
+        assertFalse(limiter.isUnlimited());
     }
 
     @Test

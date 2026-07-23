@@ -373,13 +373,17 @@ public final class Bt implements AutoCloseable {
             return this;
         }
 
-        /** 全域下載速率上限（bytes/s，0＝不限）。 */
+        /** 全域下載速率上限（bytes/s）。{@code <= 0} 不限；{@code > 0} 限速。 */
         public Builder downloadRateLimit(long bytesPerSec) {
             clientBuilder.downloadRateLimit(bytesPerSec);
             return this;
         }
 
-        /** 全域上傳速率上限（bytes/s，0＝不限）。 */
+        /**
+         * 全域上傳速率上限（bytes/s）。
+         * {@code == 0} 完全不上傳（下載/做種期間對 peer 保持 choke、拒絕 request）；
+         * {@code < 0} 不限；{@code > 0} 限速。
+         */
         public Builder uploadRateLimit(long bytesPerSec) {
             clientBuilder.uploadRateLimit(bytesPerSec);
             return this;

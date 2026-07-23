@@ -102,10 +102,14 @@ final class DefaultTorrentSession implements TorrentSession {
     private volatile Thread dhtThread;
     private volatile Thread pexThread;
 
-    // 速率計算（stats() 呼叫間的差分）
+    // 速率計算：每 ≥0.5 秒才重新取樣一次差分，避免同一輪多個 getter 各自呼叫 stats()
+    // 把基準重設在幾微秒的區間內、算出 0 或雜訊速率。
+    private static final long RATE_SAMPLE_NANOS = 500_000_000L;
     private long lastRateTime = System.nanoTime();
     private long lastDownloaded;
     private long lastUploaded;
+    private long cachedDownloadRate;
+    private long cachedUploadRate;
 
     /** BtClient 層級的共用執行環境（peer id、listen port、DHT、限速器等）。 */
     record Runtime(PeerId peerId, int listenPort, int maxPeers, DhtClient dht,
@@ -405,12 +409,18 @@ final class DefaultTorrentSession implements TorrentSession {
         long upRate;
         synchronized (this) {
             long now = System.nanoTime();
-            double seconds = Math.max((now - lastRateTime) / 1e9, 0.001);
-            downRate = (long) ((down - lastDownloaded) / seconds);
-            upRate = (long) ((up - lastUploaded) / seconds);
-            lastRateTime = now;
-            lastDownloaded = down;
-            lastUploaded = up;
+            long elapsed = now - lastRateTime;
+            // 只在取樣間隔到期時重算速率並移動基準；期間內同一輪多個 getter 讀到相同快取值
+            if (elapsed >= RATE_SAMPLE_NANOS) {
+                double seconds = elapsed / 1e9;
+                cachedDownloadRate = (long) ((down - lastDownloaded) / seconds);
+                cachedUploadRate = (long) ((up - lastUploaded) / seconds);
+                lastRateTime = now;
+                lastDownloaded = down;
+                lastUploaded = up;
+            }
+            downRate = cachedDownloadRate;
+            upRate = cachedUploadRate;
         }
         return new TorrentStats(verified, up, wanted,
                 wanted == 0 ? 0.0 : (double) verified / wanted,
@@ -901,9 +911,10 @@ final class DefaultTorrentSession implements TorrentSession {
         }
     }
 
-    /** 可上傳條件：有 storage、狀態為下載中或做種（STOPPED 時停止上傳）。 */
+    /** 可上傳條件：有 storage、上傳未被封鎖（uploadRateLimit==0）、狀態為下載中或做種。 */
     private boolean canUpload() {
-        return storage != null && (state == SessionState.DOWNLOADING || state == SessionState.SEEDING);
+        return storage != null && !uploadLimiter.isBlocked()
+                && (state == SessionState.DOWNLOADING || state == SessionState.SEEDING);
     }
 
     private void broadcastHave(int pieceIndex) {

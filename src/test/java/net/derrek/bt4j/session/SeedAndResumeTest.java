@@ -2,6 +2,7 @@ package net.derrek.bt4j.session;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
@@ -141,6 +142,43 @@ class SeedAndResumeTest {
             TorrentSession session = client.restore(resume);
             assertEquals(SessionState.STOPPED, session.state());
             assertEquals(999, session.stats().uploadedBytes());
+        }
+    }
+
+    @Test
+    void uploadRateLimitZeroSeederServesNothing(@TempDir Path tmp) throws Exception {
+        byte[] content = TorrentFixtures.randomBytes(60_000, 200);
+        Path seederDir = tmp.resolve("seeder");
+        Metainfo seederMeta = TorrentFixtures.singleFile("block.bin", content, PIECE_LENGTH, "http://unused/");
+        Files.createDirectories(seederDir);
+        Files.write(seederDir.resolve("block.bin"), content);
+        Bitfield allComplete = new Bitfield(seederMeta.pieceCount());
+        allComplete.setAll();
+        ResumeData resume = new ResumeData(seederMeta.toTorrentBytes(), allComplete, Set.of(), seederDir, 0, false, true);
+
+        // 做種端 uploadRateLimit(0) = 完全不上傳
+        try (BtClient seeder = BtClient.builder().listenPort(0).dhtEnabled(false)
+                .maxPeersPerTorrent(5).uploadRateLimit(0).build()) {
+            seeder.restore(resume);
+            try (FakeHttpTracker tracker = new FakeHttpTracker(seeder.listenPort())) {
+                Metainfo leecherMeta = TorrentFixtures.singleFile("block.bin", content, PIECE_LENGTH, tracker.announceUrl());
+                Path leecherDir = tmp.resolve("leecher");
+                try (BtClient leecher = client(0)) {
+                    TorrentSession session = leecher.addTorrent(leecherMeta);
+                    CountDownLatch done = new CountDownLatch(1);
+                    session.addListener(new SessionListener() {
+                        @Override
+                        public void onDownloadCompleted(TorrentSession s) {
+                            done.countDown();
+                        }
+                    });
+                    session.start(DownloadPlan.allFiles(leecherDir));
+
+                    // 做種端不上傳 → leecher 拿不到任何資料、無法完成
+                    assertFalse(done.await(6, TimeUnit.SECONDS), "上傳封鎖時 leecher 不應完成下載");
+                    assertEquals(0, session.stats().downloadedBytes(), "做種端應完全不上傳");
+                }
+            }
         }
     }
 }

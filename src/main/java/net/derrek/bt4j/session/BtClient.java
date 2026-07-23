@@ -63,7 +63,10 @@ public final class BtClient implements AutoCloseable {
         this.listenSocket = ls;
         this.listenPort = ls != null ? ls.getLocalPort() : builder.listenPort;
 
-        this.downloadLimiter = new net.derrek.bt4j.util.RateLimiter(builder.downloadRateLimit);
+        // 下載沒有「封鎖自己」的概念：<=0 一律視為不限速（傳 -1 給 RateLimiter）
+        this.downloadLimiter = new net.derrek.bt4j.util.RateLimiter(
+                builder.downloadRateLimit <= 0 ? -1 : builder.downloadRateLimit);
+        // 上傳：0 = 封鎖（不上傳）、<0 = 不限、>0 = 限速
         this.uploadLimiter = new net.derrek.bt4j.util.RateLimiter(builder.uploadRateLimit);
         if (builder.dhtEnabled) {
             DhtClient client = new DhtClient(listenPort, builder.dhtBootstrapNodes);
@@ -206,8 +209,8 @@ public final class BtClient implements AutoCloseable {
         private int listenPort = 6881;
         private boolean dhtEnabled = true;
         private int maxPeersPerTorrent = 30;
-        private long downloadRateLimit = 0; // 0 = 不限
-        private long uploadRateLimit = 0;
+        private long downloadRateLimit = -1; // 預設不限（<=0 = 不限）
+        private long uploadRateLimit = -1;   // 預設不限（0 = 不上傳、<0 = 不限）
         private List<InetSocketAddress> dhtBootstrapNodes = DhtClient.DEFAULT_BOOTSTRAP_NODES;
 
         private Builder() {
@@ -249,20 +252,21 @@ public final class BtClient implements AutoCloseable {
             return this;
         }
 
-        /** 全域下載速率上限（bytes/s，所有 torrent 共用）。0＝不限速。 */
+        /**
+         * 全域下載速率上限（bytes/s，所有 torrent 共用）。
+         * {@code <= 0} 不限速；{@code > 0} 限制在該速率。
+         */
         public Builder downloadRateLimit(long bytesPerSec) {
-            if (bytesPerSec < 0) {
-                throw new IllegalArgumentException("downloadRateLimit 不得為負: " + bytesPerSec);
-            }
             this.downloadRateLimit = bytesPerSec;
             return this;
         }
 
-        /** 全域上傳速率上限（bytes/s，所有 torrent 共用）。0＝不限速。 */
+        /**
+         * 全域上傳速率上限（bytes/s，所有 torrent 共用）。
+         * {@code == 0} 完全不上傳（下載/做種期間對 peer 保持 choke、拒絕 request）；
+         * {@code < 0} 不限速；{@code > 0} 限制在該速率。
+         */
         public Builder uploadRateLimit(long bytesPerSec) {
-            if (bytesPerSec < 0) {
-                throw new IllegalArgumentException("uploadRateLimit 不得為負: " + bytesPerSec);
-            }
             this.uploadRateLimit = bytesPerSec;
             return this;
         }
