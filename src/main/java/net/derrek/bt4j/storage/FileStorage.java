@@ -2,11 +2,14 @@ package net.derrek.bt4j.storage;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import net.derrek.bt4j.metainfo.FileEntry;
 import net.derrek.bt4j.metainfo.Metainfo;
@@ -94,6 +97,7 @@ public final class FileStorage implements Storage {
         // SHA-1 is CPU-bound over a now-private buffer; run it OUTSIDE the storage monitor so other peers'
         // block writes and other pieces' verifications proceed concurrently instead of serializing behind it.
         boolean ok = java.util.Arrays.equals(sha1(buffer), metainfo.pieceHash(pieceIndex));
+        List<WriteOp> ops;
         synchronized (this) {
             // Drop any buffer a late endgame-duplicate write() may have recreated for this piece while we hashed.
             pieceBuffers.remove(pieceIndex);
@@ -106,17 +110,42 @@ public final class FileStorage implements Storage {
                 // is left unset while closing, a resume re-fetches this piece rather than trusting a partial write.
                 return true;
             }
-            writeVerifiedPiece(pieceIndex, buffer);
-            completed.set(pieceIndex);
+            // Resolve (open) the target channels and byte ranges under the lock, but defer the actual disk I/O.
+            ops = planVerifiedPieceWrites(pieceIndex, buffer);
+        }
+        // Perform the disk writes OUTSIDE the storage monitor: FileChannel positional writes to distinct ranges
+        // are thread-safe, so other peers' block writes and other pieces' verifications no longer stall behind a
+        // slow write (page-cache flush / dirty-page writeback throttling).
+        try {
+            executeWrites(ops, buffer);
+        } catch (ClosedChannelException e) {
+            // close() shut the channels while we were writing (teardown). Leave completed unset so a resume
+            // re-fetches this piece rather than trusting a partially written one.
+            return true;
+        }
+        synchronized (this) {
+            // Clean up any buffer a late endgame-duplicate write() recreated between the two critical sections.
+            pieceBuffers.remove(pieceIndex);
+            if (!closed) {
+                completed.set(pieceIndex);
+            }
         }
         LOG.log(System.Logger.Level.TRACE, () -> "piece " + pieceIndex + " verified and written to disk");
         return true;
     }
 
-    /** Write the ranges of a verified piece that "belong to selected files" to their corresponding file positions. */
-    private void writeVerifiedPiece(int pieceIndex, byte[] buffer) throws IOException {
+    /** One deferred write: a byte range of the piece buffer to a resolved file channel at a file position. */
+    private record WriteOp(FileChannel channel, int bufferOffset, int length, long filePosition) {
+    }
+
+    /**
+     * Resolve which selected-file ranges a verified piece maps to, opening the target channels as needed.
+     * Must be called under the lock (it may mutate the channels map); the returned ops are executed lock-free.
+     */
+    private List<WriteOp> planVerifiedPieceWrites(int pieceIndex, byte[] buffer) throws IOException {
         long pieceStart = (long) pieceIndex * metainfo.pieceLength();
         long pieceEnd = pieceStart + buffer.length;
+        List<WriteOp> ops = new ArrayList<>();
         for (FileEntry file : metainfo.files()) {
             if (!selection.isFileWanted(file.index()) || file.length() == 0) {
                 continue;
@@ -128,11 +157,19 @@ public final class FileStorage implements Storage {
             if (overlapStart >= overlapEnd) {
                 continue;
             }
-            FileChannel channel = channel(file);
-            ByteBuffer slice = ByteBuffer.wrap(buffer, (int) (overlapStart - pieceStart), (int) (overlapEnd - overlapStart));
-            long position = overlapStart - fileStart;
+            ops.add(new WriteOp(channel(file), (int) (overlapStart - pieceStart),
+                    (int) (overlapEnd - overlapStart), overlapStart - fileStart));
+        }
+        return ops;
+    }
+
+    /** Execute the deferred writes. Safe to run without the lock: distinct pieces map to disjoint file ranges. */
+    private static void executeWrites(List<WriteOp> ops, byte[] buffer) throws IOException {
+        for (WriteOp op : ops) {
+            ByteBuffer slice = ByteBuffer.wrap(buffer, op.bufferOffset(), op.length());
+            long position = op.filePosition();
             while (slice.hasRemaining()) {
-                position += channel.write(slice, position);
+                position += op.channel().write(slice, position);
             }
         }
     }
