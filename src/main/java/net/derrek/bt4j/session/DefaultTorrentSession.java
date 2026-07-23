@@ -66,6 +66,8 @@ final class DefaultTorrentSession implements TorrentSession {
     private final int listenPort;
     private final int maxPeers;
     private final DhtClient dht; // null = 停用
+    private final net.derrek.bt4j.util.RateLimiter downloadLimiter;
+    private final net.derrek.bt4j.util.RateLimiter uploadLimiter;
     private final List<java.net.URI> magnetTrackers;
     private final MetadataExchange metadataExchange;
     private final CompletableFuture<Metainfo> metadataFuture = new CompletableFuture<>();
@@ -105,14 +107,22 @@ final class DefaultTorrentSession implements TorrentSession {
     private long lastDownloaded;
     private long lastUploaded;
 
+    /** BtClient 層級的共用執行環境（peer id、listen port、DHT、限速器等）。 */
+    record Runtime(PeerId peerId, int listenPort, int maxPeers, DhtClient dht,
+                   net.derrek.bt4j.util.RateLimiter downloadLimiter,
+                   net.derrek.bt4j.util.RateLimiter uploadLimiter) {
+    }
+
     /** .torrent 來源。 */
-    DefaultTorrentSession(Metainfo metainfo, PeerId peerId, int listenPort, int maxPeers, DhtClient dht) {
+    DefaultTorrentSession(Metainfo metainfo, Runtime runtime) {
         this.infoHash = metainfo.infoHash();
         this.metainfo = metainfo;
-        this.peerId = peerId;
-        this.listenPort = listenPort;
-        this.maxPeers = maxPeers;
-        this.dht = dht;
+        this.peerId = runtime.peerId();
+        this.listenPort = runtime.listenPort();
+        this.maxPeers = runtime.maxPeers();
+        this.dht = runtime.dht();
+        this.downloadLimiter = runtime.downloadLimiter();
+        this.uploadLimiter = runtime.uploadLimiter();
         this.magnetTrackers = List.of();
         this.metadataExchange = new MetadataExchange(infoHash);
         this.metadataExchange.supply(metainfo.infoDictBytes()); // 可回應他人的 metadata request
@@ -120,21 +130,22 @@ final class DefaultTorrentSession implements TorrentSession {
         this.state = SessionState.METADATA_READY;
     }
 
-    private DefaultTorrentSession(MagnetUri magnet, PeerId peerId, int listenPort, int maxPeers, DhtClient dht) {
+    private DefaultTorrentSession(MagnetUri magnet, Runtime runtime) {
         this.infoHash = magnet.infoHash();
-        this.peerId = peerId;
-        this.listenPort = listenPort;
-        this.maxPeers = maxPeers;
-        this.dht = dht;
+        this.peerId = runtime.peerId();
+        this.listenPort = runtime.listenPort();
+        this.maxPeers = runtime.maxPeers();
+        this.dht = runtime.dht();
+        this.downloadLimiter = runtime.downloadLimiter();
+        this.uploadLimiter = runtime.uploadLimiter();
         this.magnetTrackers = magnet.trackers();
         this.metadataExchange = new MetadataExchange(infoHash);
         this.state = SessionState.FETCHING_METADATA;
     }
 
     /** 磁力連結來源：建立後立即開始背景取 metadata。 */
-    static DefaultTorrentSession fromMagnet(MagnetUri magnet, PeerId peerId, int listenPort, int maxPeers,
-                                            DhtClient dht) {
-        DefaultTorrentSession session = new DefaultTorrentSession(magnet, peerId, listenPort, maxPeers, dht);
+    static DefaultTorrentSession fromMagnet(MagnetUri magnet, Runtime runtime) {
+        DefaultTorrentSession session = new DefaultTorrentSession(magnet, runtime);
         LOG.log(Level.DEBUG, () -> "added magnet " + magnet.infoHash().hex()
                 + " (trackers=" + magnet.trackers().size() + ", x.pe=" + magnet.peers().size() + ")");
         session.beginMetadataPhase(magnet);
@@ -142,10 +153,9 @@ final class DefaultTorrentSession implements TorrentSession {
     }
 
     /** resume 來源：重啟續傳（跳過已完成 piece）。 */
-    static DefaultTorrentSession fromResume(ResumeData resume, PeerId peerId, int listenPort, int maxPeers,
-                                            DhtClient dht) {
+    static DefaultTorrentSession fromResume(ResumeData resume, Runtime runtime) {
         Metainfo meta = resume.metainfo();
-        DefaultTorrentSession session = new DefaultTorrentSession(meta, peerId, listenPort, maxPeers, dht);
+        DefaultTorrentSession session = new DefaultTorrentSession(meta, runtime);
         session.restoreState(resume);
         return session;
     }
@@ -731,6 +741,7 @@ final class DefaultTorrentSession implements TorrentSession {
 
         private void onBlock(int pieceIndex, int begin, byte[] data) {
             outstanding.remove(new BlockRequest(pieceIndex, begin, data.length));
+            downloadLimiter.acquire(data.length); // 下載限速：延後讀迴圈 → TCP 背壓
             downloadedBytes.addAndGet(data.length);
             // 記錄此 piece 由哪些 peer 貢獻，供驗證失敗時追責
             pieceContributors.computeIfAbsent(pieceIndex, k -> ConcurrentHashMap.newKeySet())
@@ -790,6 +801,7 @@ final class DefaultTorrentSession implements TorrentSession {
                 reject(conn, pieceIndex, begin, length);
                 return;
             }
+            uploadLimiter.acquire(length); // 上傳限速
             conn.send(new PeerMessage.Piece(pieceIndex, begin, data));
             uploadedBytes.addAndGet(length);
             LOG.log(Level.TRACE, () -> "uploaded block piece=" + pieceIndex + " begin=" + begin + " -> " + conn.address());

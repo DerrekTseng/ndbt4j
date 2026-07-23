@@ -92,18 +92,18 @@
 - [x] 全面 logging：`System.Logger`（零依賴，只用 WARNING/ERROR/DEBUG/TRACE，無 INFO；引用方可橋接 slf4j）
 - [x] 驗收：兩個 bt4j client 一做種一下載（走真實 wire）、部分完成 resume 續傳只索取缺少 piece、stopped resume 保持 STOPPED
 
-## M9 — 擴充功能 ✅（限速除外，見待決）
+## M9 — 擴充功能 ✅
 
 - [x] `PeerExchange`（BEP 11）：每連線一實例、≥60s 週期 tick、added/dropped 差異、added6(IPv6)、寬容解析；session 週期迴圈驅動
 - [x] Fast Extension（BEP 6）：握手宣告 fast bit、完整/全空用 HaveAll/HaveNone、收到 RejectRequest 重排並立即重試、AllowedFast 於 choke 期間仍請求（`RarestFirstPicker.pickFromPiece`）、拒絕上傳時回 RejectRequest
 - [x] private torrent（BEP 27）：停用 DHT（M7）與 PEX；`pexEnabled()`/`startPexLoop`/`startDhtLoop` 皆檢查 isPrivate
 - [x] 壞 peer 黑名單：piece 驗證失敗對貢獻 block 的 peer 記點，達 3 次封鎖並斷線；connector/acceptIncoming/onPeersFound 皆略過封鎖名單
-- [x] 測試：PEX build/parse 往返、pickFromPiece、Fast Extension（RejectRequest 後仍完成下載）、惡意 seeder 被封鎖（140 tests）
-- [ ] 全域限速（見待決——唯一未決項）
+- [x] 測試：PEX build/parse 往返、pickFromPiece、Fast Extension（RejectRequest 後仍完成下載）、惡意 seeder 被封鎖
+- [x] 全域限速：`net.derrek.bt4j.util.RateLimiter`（token bucket），`BtClient.Builder.downloadRateLimit/uploadRateLimit`（bytes/s，0=不限），下載在 onBlock、上傳在 serveBlock 套用；限速測試驗證吞吐受控（144 tests）
 
 ## 待決（實作前要拍板）
 
-- [ ] 全域限速（上傳/下載頻寬）要不要進初版
+- [x] 全域限速（上傳/下載頻寬）：已決定實作（見 M9）
 - [x] block 暫存策略：已決定「未驗證前放記憶體，驗證通過才落地」（上限 = MAX_ACTIVE_PIECES 32 × pieceLength；邊界丟棄自然成立）
 - [x] logging：採 `System.Logger`（JDK 內建、零依賴）。等級只用 WARNING/ERROR/DEBUG/TRACE。引用方加 `slf4j-jdk-platform-logging` 即可導向 slf4j/logback，bt4j 本身維持零依賴
 - [x] 路由表隨 resume 持久化：暫緩（DHT bootstrap 已足夠可用；未來可加）

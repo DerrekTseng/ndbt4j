@@ -39,6 +39,8 @@ public final class BtClient implements AutoCloseable {
     private final int listenPort;
     private final int maxPeersPerTorrent;
     private final DhtClient dht; // null = 停用
+    private final net.derrek.bt4j.util.RateLimiter downloadLimiter;
+    private final net.derrek.bt4j.util.RateLimiter uploadLimiter;
     private final Map<InfoHash, TorrentSession> sessions = new ConcurrentHashMap<>();
 
     private final ServerSocket listenSocket;
@@ -61,6 +63,8 @@ public final class BtClient implements AutoCloseable {
         this.listenSocket = ls;
         this.listenPort = ls != null ? ls.getLocalPort() : builder.listenPort;
 
+        this.downloadLimiter = new net.derrek.bt4j.util.RateLimiter(builder.downloadRateLimit);
+        this.uploadLimiter = new net.derrek.bt4j.util.RateLimiter(builder.uploadRateLimit);
         if (builder.dhtEnabled) {
             DhtClient client = new DhtClient(listenPort, builder.dhtBootstrapNodes);
             client.start();
@@ -130,7 +134,12 @@ public final class BtClient implements AutoCloseable {
     public TorrentSession addMagnet(String magnetLink) {
         net.derrek.bt4j.metainfo.MagnetUri magnet = net.derrek.bt4j.metainfo.MagnetUri.parse(magnetLink);
         return sessions.computeIfAbsent(magnet.infoHash(),
-                hash -> DefaultTorrentSession.fromMagnet(magnet, peerId, listenPort, maxPeersPerTorrent, dht));
+                hash -> DefaultTorrentSession.fromMagnet(magnet, runtime()));
+    }
+
+    private DefaultTorrentSession.Runtime runtime() {
+        return new DefaultTorrentSession.Runtime(
+                peerId, listenPort, maxPeersPerTorrent, dht, downloadLimiter, uploadLimiter);
     }
 
     /** 加入 .torrent 檔（狀態直接 METADATA_READY）。 */
@@ -140,7 +149,7 @@ public final class BtClient implements AutoCloseable {
 
     public TorrentSession addTorrent(Metainfo metainfo) {
         return sessions.computeIfAbsent(metainfo.infoHash(),
-                hash -> new DefaultTorrentSession(metainfo, peerId, listenPort, maxPeersPerTorrent, dht));
+                hash -> new DefaultTorrentSession(metainfo, runtime()));
     }
 
     /**
@@ -149,7 +158,7 @@ public final class BtClient implements AutoCloseable {
      */
     public TorrentSession restore(ResumeData resumeData) {
         return sessions.computeIfAbsent(resumeData.infoHash(),
-                hash -> DefaultTorrentSession.fromResume(resumeData, peerId, listenPort, maxPeersPerTorrent, dht));
+                hash -> DefaultTorrentSession.fromResume(resumeData, runtime()));
     }
 
     public List<TorrentSession> sessions() {
@@ -189,6 +198,8 @@ public final class BtClient implements AutoCloseable {
         private int listenPort = 6881;
         private boolean dhtEnabled = true;
         private int maxPeersPerTorrent = 30;
+        private long downloadRateLimit = 0; // 0 = 不限
+        private long uploadRateLimit = 0;
         private List<InetSocketAddress> dhtBootstrapNodes = DhtClient.DEFAULT_BOOTSTRAP_NODES;
 
         private Builder() {
@@ -227,6 +238,24 @@ public final class BtClient implements AutoCloseable {
                 throw new IllegalArgumentException("maxPeersPerTorrent 必須為正: " + max);
             }
             this.maxPeersPerTorrent = max;
+            return this;
+        }
+
+        /** 全域下載速率上限（bytes/s，所有 torrent 共用）。0＝不限速。 */
+        public Builder downloadRateLimit(long bytesPerSec) {
+            if (bytesPerSec < 0) {
+                throw new IllegalArgumentException("downloadRateLimit 不得為負: " + bytesPerSec);
+            }
+            this.downloadRateLimit = bytesPerSec;
+            return this;
+        }
+
+        /** 全域上傳速率上限（bytes/s，所有 torrent 共用）。0＝不限速。 */
+        public Builder uploadRateLimit(long bytesPerSec) {
+            if (bytesPerSec < 0) {
+                throw new IllegalArgumentException("uploadRateLimit 不得為負: " + bytesPerSec);
+            }
+            this.uploadRateLimit = bytesPerSec;
             return this;
         }
 
