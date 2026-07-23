@@ -1098,7 +1098,7 @@ final class DefaultTorrentSession implements TorrentSession {
         private void onBlock(int pieceIndex, int begin, byte[] data) {
             BlockRequest block = new BlockRequest(pieceIndex, begin, data.length);
             outstanding.remove(block);
-            downloadLimiter.acquire(data.length); // download throttling: stalls the read loop → TCP backpressure
+            downloadLimiter.acquire(data.length, connection::isClosed); // download throttling: stalls the read loop → TCP backpressure; stops early if the connection closes
             downloadedBytes.addAndGet(data.length);
             bytesFromPeer.addAndGet(data.length); // choke algorithm: tit-for-tat ranking key
             long now = System.nanoTime();
@@ -1176,7 +1176,10 @@ final class DefaultTorrentSession implements TorrentSession {
                 reject(conn, pieceIndex, begin, length);
                 return;
             }
-            uploadLimiter.acquire(length); // upload throttling
+            uploadLimiter.acquire(length, conn::isClosed); // upload throttling; stops early if the connection closes
+            if (conn.isClosed()) {
+                return; // the connection died while we throttled: nothing will be sent, do not count the bytes
+            }
             conn.send(new PeerMessage.Piece(pieceIndex, begin, data));
             uploadedBytes.addAndGet(length);
             bytesToPeer.addAndGet(length); // choke algorithm: the ranking key while seeding

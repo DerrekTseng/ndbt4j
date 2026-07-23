@@ -54,4 +54,24 @@ class RateLimiterTest {
         limiter.acquire(128 * 1024); // a maximum-size block, should not loop forever
         assertTrue(true);
     }
+
+    @Test
+    void cancelledWaiterReturnsPromptly() {
+        // 1 KiB/s: a 16 KiB acquire would wait ~16s. Flip the cancellation flag mid-wait and the waiter must
+        // return within a couple of sleep slices instead of sitting out the full token wait.
+        RateLimiter limiter = new RateLimiter(1024);
+        limiter.acquire(256 * 1024); // drain the burst capacity
+        java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        Thread.ofVirtual().start(() -> {
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException ignored) {
+            }
+            cancelled.set(true);
+        });
+        long start = System.nanoTime();
+        limiter.acquire(16 * 1024, cancelled::get);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        assertTrue(elapsedMs < 2_000, "cancelled acquire should return promptly, took " + elapsedMs + "ms");
+    }
 }

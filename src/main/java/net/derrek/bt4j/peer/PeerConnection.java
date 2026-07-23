@@ -262,6 +262,11 @@ public final class PeerConnection implements AutoCloseable {
         return peerInterested;
     }
 
+    /** Whether this connection has been closed (locally or by an error). */
+    public boolean isClosed() {
+        return closed.get();
+    }
+
     @Override
     public void close() {
         closeInternal(null);

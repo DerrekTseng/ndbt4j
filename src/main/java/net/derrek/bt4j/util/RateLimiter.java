@@ -37,12 +37,26 @@ public final class RateLimiter {
         return ratePerSec == 0;
     }
 
+    /** Upper bound on a single sleep slice, so a cancelled waiter is noticed promptly even at very low rates. */
+    private static final long MAX_SLICE_NANOS = 100_000_000L; // 100ms
+
     /**
      * Acquires {@code bytes} tokens (blocks and waits if there are not enough). A non-positive rate (unlimited or blocked) returns immediately—
      * whether it is blocked is intercepted in advance by the caller via {@link #isBlocked()}; acquire does not do the blocking.
      * If interrupted while waiting, restores the interrupt flag and returns early (letting the upper layer finish up based on the connection's closed state).
      */
     public void acquire(int bytes) {
+        acquire(bytes, () -> false);
+    }
+
+    /**
+     * Like {@link #acquire(int)}, but polls {@code cancelled} between bounded sleep slices and returns early
+     * (without consuming tokens) once it turns true. Lets a waiter tied to a peer connection stop throttling
+     * promptly when that connection closes — a socket close cannot wake a plain {@code Thread.sleep}, and peer
+     * read threads are deliberately never interrupted (an interrupt during a shared-FileChannel write would
+     * close the channel for every peer).
+     */
+    public void acquire(int bytes, java.util.function.BooleanSupplier cancelled) {
         if (ratePerSec <= 0 || bytes <= 0) {
             return;
         }
@@ -56,10 +70,14 @@ public final class RateLimiter {
                 }
                 waitNanos = (long) Math.ceil((bytes - tokens) / (double) ratePerSec * 1_000_000_000L);
             }
+            long slice = Math.min(waitNanos, MAX_SLICE_NANOS);
             try {
-                Thread.sleep(waitNanos / 1_000_000L, (int) (waitNanos % 1_000_000L));
+                Thread.sleep(slice / 1_000_000L, (int) (slice % 1_000_000L));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                return;
+            }
+            if (cancelled.getAsBoolean()) {
                 return;
             }
         }
