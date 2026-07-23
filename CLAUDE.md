@@ -11,9 +11,10 @@ BitTorrent 下載套件（library），純 Java 實作。
 
 ## 程式結構
 
-- 根 package：`net.derrek.bt4j`（bencode / metainfo / tracker / dht / peer / peer.ext / piece / storage / session）。
-- 對外 API 入口：`session.BtClient` 與 `session.TorrentSession`。
-- 進度見 `doc/TODO.md`：M0–M8 已完成（含磁力連結、DHT、做種、resume），M9 為擴充功能。
+- 根 package：`net.derrek.bt4j`（bencode / metainfo / tracker / dht / peer / peer.ext / piece / storage / session / util）。
+- **對外 API 入口：`net.derrek.bt4j.Bt`（facade）** — `Bt.builder()` → `fromMagnet`/`fromTorrent` → `createDownloadJob` → `download` → `TorrentDownloadTask`。底層 `session.BtClient` 為內部引擎。
+- 持久化：每個任務在目標目錄有 `<info-hash>.bt4j`（引擎自管、原子寫入、完成無做種即刪、做種保留）。fresh download 靠 `start()` 內的 recheck 救回既有半成品；restore 信任 .bt4j bitfield 快速續傳。
+- 進度見 `doc/TODO.md`：M0–M9 全部完成，facade 對外 API 已完成。
 
 ## Logging
 

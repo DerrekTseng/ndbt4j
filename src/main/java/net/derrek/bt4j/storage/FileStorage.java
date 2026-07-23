@@ -119,8 +119,16 @@ public final class FileStorage implements Storage {
         }
     }
 
-    /** 從磁碟讀取全域位移 globalStart 起的 out.length bytes（只跨勾選檔案）。回傳實際填入數。 */
     private int readFromFiles(long globalStart, byte[] out) throws IOException {
+        return readFromFiles(globalStart, out, true);
+    }
+
+    /**
+     * 從磁碟讀取全域位移 globalStart 起的 out.length bytes（只跨勾選檔案）。回傳實際填入數。
+     *
+     * @param createIfMissing false 時（recheck 掃描）不建立不存在的檔案，缺檔即視為讀不到
+     */
+    private int readFromFiles(long globalStart, byte[] out, boolean createIfMissing) throws IOException {
         int filled = 0;
         long globalEnd = globalStart + out.length;
         for (FileEntry file : metainfo.files()) {
@@ -134,7 +142,10 @@ public final class FileStorage implements Storage {
             if (overlapStart >= overlapEnd) {
                 continue;
             }
-            FileChannel channel = channel(file);
+            FileChannel channel = channel(file, createIfMissing);
+            if (channel == null) {
+                return filled; // 檔案不存在（recheck 掃描時）→ 此 piece 不完整
+            }
             ByteBuffer slice = ByteBuffer.wrap(out, (int) (overlapStart - globalStart), (int) (overlapEnd - overlapStart));
             long position = overlapStart - fileStart;
             while (slice.hasRemaining()) {
@@ -158,6 +169,11 @@ public final class FileStorage implements Storage {
     }
 
     private FileChannel channel(FileEntry file) throws IOException {
+        return channel(file, true);
+    }
+
+    /** @param createIfMissing false 且檔案尚未開啟／不存在時回傳 null（不建立檔案） */
+    private FileChannel channel(FileEntry file, boolean createIfMissing) throws IOException {
         FileChannel existing = channels.get(file.index());
         if (existing != null) {
             return existing;
@@ -165,6 +181,9 @@ public final class FileStorage implements Storage {
         Path path = root;
         for (String component : file.path()) {
             path = path.resolve(component);
+        }
+        if (!createIfMissing && !Files.exists(path)) {
+            return null;
         }
         Files.createDirectories(path.getParent());
         FileChannel channel = FileChannel.open(path,
@@ -190,8 +209,8 @@ public final class FileStorage implements Storage {
                 continue;
             }
             byte[] buffer = new byte[metainfo.pieceLengthAt(p)];
-            if (readFromFiles((long) p * metainfo.pieceLength(), buffer) != buffer.length) {
-                continue;
+            if (readFromFiles((long) p * metainfo.pieceLength(), buffer, false) != buffer.length) {
+                continue; // 檔案不存在或不完整
             }
             if (java.util.Arrays.equals(sha1(buffer), metainfo.pieceHash(p))) {
                 completed.set(p);

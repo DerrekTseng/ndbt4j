@@ -26,13 +26,15 @@ import net.derrek.bt4j.piece.Bitfield;
  * @param saveTo              下載目的地
  * @param uploaded            累計上傳量（統計沿續）
  * @param seedingStopped      使用者是否已手動關閉上傳
+ * @param seedAfterComplete   下載完成後是否做種
  */
 public record ResumeData(byte[] torrentBytes,
                          Bitfield completedPieces,
                          Set<Integer> selectedFileIndices,
                          Path saveTo,
                          long uploaded,
-                         boolean seedingStopped) {
+                         boolean seedingStopped,
+                         boolean seedAfterComplete) {
 
     /** 解析內嵌的 metainfo。 */
     public Metainfo metainfo() {
@@ -66,6 +68,7 @@ public record ResumeData(byte[] torrentBytes,
         map.put(BValue.BString.of("saveTo"), BValue.BString.of(saveTo == null ? "" : saveTo.toString()));
         map.put(BValue.BString.of("uploaded"), new BValue.BInteger(uploaded));
         map.put(BValue.BString.of("stopped"), new BValue.BInteger(seedingStopped ? 1 : 0));
+        map.put(BValue.BString.of("seedAfter"), new BValue.BInteger(seedAfterComplete ? 1 : 0));
         return Bencode.encode(new BValue.BDictionary(map));
     }
 
@@ -90,8 +93,9 @@ public record ResumeData(byte[] torrentBytes,
         Path saveTo = saveToText.isEmpty() ? null : Path.of(saveToText);
         long uploaded = dict.get("uploaded").orElse(null) instanceof BValue.BInteger(long u) ? u : 0;
         boolean stopped = dict.get("stopped").orElse(null) instanceof BValue.BInteger(long v) && v == 1;
+        boolean seedAfter = dict.get("seedAfter").orElse(null) instanceof BValue.BInteger(long sa) && sa == 1;
 
-        return new ResumeData(torrentBytes, completed, Set.copyOf(selected), saveTo, uploaded, stopped);
+        return new ResumeData(torrentBytes, completed, Set.copyOf(selected), saveTo, uploaded, stopped, seedAfter);
     }
 
     private static byte[] requireString(BValue.BDictionary dict, String key) {

@@ -25,7 +25,7 @@ class ResumeDataTest {
         completed.set(0);
         completed.set(2);
         return new ResumeData(meta.toTorrentBytes(), completed, Set.of(0),
-                Path.of("D:/downloads"), 12345, false);
+                Path.of("D:/downloads"), 12345, false, true);
     }
 
     @Test
@@ -41,6 +41,7 @@ class ResumeDataTest {
         assertEquals(Path.of("D:/downloads"), decoded.saveTo());
         assertEquals(12345, decoded.uploaded());
         assertFalse(decoded.seedingStopped());
+        assertTrue(decoded.seedAfterComplete());
         assertEquals(meta.name(), decoded.metainfo().name());
     }
 
@@ -61,7 +62,7 @@ class ResumeDataTest {
     void stoppedAndEmptySelectionPreserved() {
         Metainfo meta = meta();
         ResumeData original = new ResumeData(meta.toTorrentBytes(),
-                new Bitfield(meta.pieceCount()), Set.of(), Path.of("D:/x"), 0, true);
+                new Bitfield(meta.pieceCount()), Set.of(), Path.of("D:/x"), 0, true, false);
         ResumeData decoded = ResumeData.decode(original.encode());
         assertTrue(decoded.seedingStopped());
         assertTrue(decoded.selectedFileIndices().isEmpty());

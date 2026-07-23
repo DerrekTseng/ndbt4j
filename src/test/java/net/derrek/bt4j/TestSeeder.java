@@ -33,7 +33,13 @@ public final class TestSeeder implements AutoCloseable {
     private final Metainfo metainfo;
     private final byte[] content;
     private final ConcurrentLinkedQueue<Socket> sockets = new ConcurrentLinkedQueue<>();
+    private final java.util.concurrent.atomic.AtomicLong uploaded = new java.util.concurrent.atomic.AtomicLong();
     private volatile boolean closed;
+
+    /** 測試用：此 seeder 已上傳（回應 Request）的位元組總數。 */
+    public long uploadedBytesForTest() {
+        return uploaded.get();
+    }
 
     public TestSeeder(Metainfo metainfo, byte[] content) throws IOException {
         this.metainfo = metainfo;
@@ -86,6 +92,7 @@ public final class TestSeeder implements AutoCloseable {
                         int start = piece * (int) metainfo.pieceLength() + begin;
                         PeerMessage.write(out, new PeerMessage.Piece(piece, begin,
                                 Arrays.copyOfRange(content, start, start + length)));
+                        uploaded.addAndGet(length);
                     }
                     case PeerMessage.Extended(int extendedId, byte[] payload) -> {
                         if (extendedId == 0) {

@@ -42,6 +42,13 @@ public interface TorrentSession extends AutoCloseable {
     /** 目前統計快照（任何狀態皆可輪詢）。 */
     TorrentStats stats();
 
+    /** 逐檔已下載進度（僅列勾選的檔案）。metadata 未就緒時為空清單。 */
+    java.util.List<FileProgress> fileProgress();
+
+    /** 單一檔案的下載進度。 */
+    record FileProgress(int fileIndex, java.util.List<String> path, long downloadedBytes, long totalBytes) {
+    }
+
     void addListener(SessionListener listener);
 
     void removeListener(SessionListener listener);

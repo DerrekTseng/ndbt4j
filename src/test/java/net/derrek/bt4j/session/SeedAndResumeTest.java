@@ -36,7 +36,7 @@ class SeedAndResumeTest {
         Files.write(seederDir.resolve(meta.name()), content);
         Bitfield allComplete = new Bitfield(meta.pieceCount());
         allComplete.setAll();
-        ResumeData resume = new ResumeData(meta.toTorrentBytes(), allComplete, Set.of(), seederDir, 0, false);
+        ResumeData resume = new ResumeData(meta.toTorrentBytes(), allComplete, Set.of(), seederDir, 0, false, true);
 
         BtClient seeder = client(0);
         TorrentSession session = seeder.restore(resume);
@@ -98,7 +98,7 @@ class SeedAndResumeTest {
             for (int p = 0; p < completedPieces; p++) {
                 partial.set(p);
             }
-            ResumeData resume = new ResumeData(meta.toTorrentBytes(), partial, Set.of(), leecherDir, 0, false);
+            ResumeData resume = new ResumeData(meta.toTorrentBytes(), partial, Set.of(), leecherDir, 0, false, true);
 
             try (BtClient leecher = client(0)) {
                 TorrentSession session = leecher.restore(resume);
@@ -135,7 +135,7 @@ class SeedAndResumeTest {
         Files.write(dir.resolve("stopped.bin"), content);
         Bitfield full = new Bitfield(meta.pieceCount());
         full.setAll();
-        ResumeData resume = new ResumeData(meta.toTorrentBytes(), full, Set.of(), dir, 999, true);
+        ResumeData resume = new ResumeData(meta.toTorrentBytes(), full, Set.of(), dir, 999, true, true);
 
         try (BtClient client = client(0)) {
             TorrentSession session = client.restore(resume);

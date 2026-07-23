@@ -101,6 +101,20 @@
 - [x] 測試：PEX build/parse 往返、pickFromPiece、Fast Extension（RejectRequest 後仍完成下載）、惡意 seeder 被封鎖
 - [x] 全域限速：`net.derrek.bt4j.util.RateLimiter`（token bucket），`BtClient.Builder.downloadRateLimit/uploadRateLimit`（bytes/s，0=不限），下載在 onBlock、上傳在 serveBlock 套用；限速測試驗證吞吐受控（144 tests）
 
+## Facade / 對外 API（`net.derrek.bt4j.Bt`）✅
+
+使用者最終呼叫模式（AP 維護種子/資料夾，引擎無狀態、靠 `.bt4j` sidecar 續傳）。
+
+- [x] `Bt`（entry）：builder（listenPort/dht/限速/maxPeers）；`fromTorrent(Path|File)`、`fromMagnet(url, timeout)`（阻塞取 metadata 後丟棄暫時 session）
+- [x] `TorrentContent` / `TorrentContentFile`：name、getFileList、totalSize（可 filter 勾選）
+- [x] `createDownloadJob(files, dir, seedAfter)`：同種子驗證（混不同種拋錯）、當場寫 `<info-hash>.bt4j`（同種已存在拋錯）；`restoreDownloadJobs(dir)` 掃描回 List（空回空清單、壞檔略過）
+- [x] `download(job)`：info-hash 冪等；fresh→`start()`（recheck 救回既有半成品）、restore→`restore()`（信任 .bt4j bitfield 快速續傳）
+- [x] `TorrentDownloadTask`：純 getter 進度（總體 + 逐檔 `fileProgress()`）、`getDownloadTaskList()`/`getSeedingTaskList()`
+- [x] `stop(task)`（保留檔案+.bt4j）、`deleteJob(task)`（只刪 .bt4j）；完成無做種→刪 .bt4j、做種→保留
+- [x] `.bt4j` 生命週期：引擎自管，週期 5s 原子寫入（temp+rename）、變化才寫
+- [x] 引擎內部調整：ResumeData 加 seedAfterComplete、FileStorage.recheck 不建空檔、start() 接 recheck、onDownloadComplete 依 seedAfter 決定做種/停止、TorrentSession.fileProgress()、BtClient.remove()
+- [x] 測試：facade 端到端（完成刪 .bt4j、做種保留 .bt4j、同種驗證、restore 掃描、recheck 救回半成品）共 149 tests
+
 ## 待決（實作前要拍板）
 
 - [x] 全域限速（上傳/下載頻寬）：已決定實作（見 M9）

@@ -169,6 +169,14 @@ public final class BtClient implements AutoCloseable {
         return Optional.ofNullable(sessions.get(infoHash));
     }
 
+    /** 關閉並移除某個 session（例如磁力連結取得 metadata 後丟棄暫時 session）。 */
+    public void remove(InfoHash infoHash) {
+        TorrentSession removed = sessions.remove(infoHash);
+        if (removed != null) {
+            removed.close();
+        }
+    }
+
     public PeerId peerId() {
         return peerId;
     }
