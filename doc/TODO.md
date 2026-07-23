@@ -62,12 +62,13 @@
 - [x] `DefaultTorrentSession` 改用 TrackerManager（移除自製 announce 迴圈）
 - [x] 整合測試：對公開 UDP tracker（opentrackr:1337）announce 成功
 
-## M6 — 擴充協定 + 磁力連結
+## M6 — 擴充協定 + 磁力連結 ✅
 
-- [ ] `ExtensionRegistry`：extension handshake、id 對映、分派
-- [ ] `MetadataExchange`：分塊請求、SHA-1 驗證、拒絕偽造、`supply` 回應他人
-- [ ] `BtClient.addMagnet` 全流程：FETCHING_METADATA → METADATA_READY
-- [ ] 驗收：有 tracker 的磁力連結能列出檔案清單、匯出 .torrent
+- [x] `ExtensionRegistry`：extension handshake（m 字典、v、metadata_size）、雙向 id 對映、分派、id=0 停用語意
+- [x] `MetadataExchange`：分塊請求、SHA-1 驗證、偽造整包丟棄可重試、metadata_size 上限 8MB、`supply` 回應他人 request
+- [x] `BtClient.addMagnet` 全流程：FETCHING_METADATA →（tracker/x.pe 找 peer → BEP 10/9）→ METADATA_READY；metadata 階段連線於轉換時收掉、下載階段以正確 pieceCount 重連
+- [x] `addListener` 補發 onMetadataReady（修正「metadata 秒到、listener 晚掛」的漏事件競態）
+- [x] 驗收：磁力連結端到端測試——tr= 假 tracker 全流程（列檔案、匯出 .torrent hash 不變、續接下載完成）+ x.pe 直連無 tracker 取 metadata
 
 ## M7 — DHT
 

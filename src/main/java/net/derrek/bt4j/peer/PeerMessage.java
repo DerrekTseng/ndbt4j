@@ -190,7 +190,9 @@ public sealed interface PeerMessage {
                 case 2 -> new Interested();
                 case 3 -> new NotInterested();
                 case 4 -> new Have(buf.getInt());
-                case 5 -> new BitfieldMessage(Bitfield.fromBytes(payload, pieceCount));
+                // pieceCount <= 0（magnet 情境 metadata 未知）：以 payload 位元數當 piece 數寬容解析
+                case 5 -> new BitfieldMessage(Bitfield.fromBytes(payload,
+                        pieceCount > 0 ? pieceCount : payload.length * 8));
                 case 6 -> new Request(buf.getInt(), buf.getInt(), buf.getInt());
                 case 7 -> {
                     int piece = buf.getInt();

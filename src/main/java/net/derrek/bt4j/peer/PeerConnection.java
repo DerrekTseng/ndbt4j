@@ -62,7 +62,8 @@ public final class PeerConnection implements AutoCloseable {
         this.localId = localId;
         this.pieceCount = pieceCount;
         this.listener = listener;
-        this.peerBitfield = new Bitfield(pieceCount);
+        // pieceCount <= 0：magnet 情境 metadata 未知，先給最小 bitfield（bitfield 訊息到達時取代）
+        this.peerBitfield = new Bitfield(Math.max(1, pieceCount));
     }
 
     /** 主動連出。建構後呼叫 {@link #start()} 才開始 IO。 */
@@ -95,7 +96,7 @@ public final class PeerConnection implements AutoCloseable {
             DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
 
-            out.write(Handshake.outgoing(infoHash, localId, false, false, false).encode());
+            out.write(Handshake.outgoing(infoHash, localId, false, true, false).encode());
             out.flush();
             byte[] response = in.readNBytes(Handshake.LENGTH);
             if (response.length != Handshake.LENGTH) {
@@ -131,10 +132,15 @@ public final class PeerConnection implements AutoCloseable {
             case PeerMessage.Unchoke() -> peerChoking = false;
             case PeerMessage.Interested() -> peerInterested = true;
             case PeerMessage.NotInterested() -> peerInterested = false;
-            case PeerMessage.Have(int piece) -> peerBitfield.set(piece);
+            case PeerMessage.Have(int piece) -> {
+                if (piece >= 0 && piece < peerBitfield.pieceCount()) {
+                    peerBitfield.set(piece);
+                }
+                // 超出範圍：metadata 未知階段的 bitfield 尚未到達，忽略
+            }
             case PeerMessage.BitfieldMessage(Bitfield bf) -> peerBitfield = bf.copy();
             case PeerMessage.HaveAll() -> peerBitfield.setAll();
-            case PeerMessage.HaveNone() -> peerBitfield = new Bitfield(pieceCount);
+            case PeerMessage.HaveNone() -> peerBitfield = new Bitfield(Math.max(1, pieceCount));
             default -> {
             }
         }

@@ -41,9 +41,14 @@ public final class BtClient implements AutoCloseable {
         return new Builder();
     }
 
-    /** 加入磁力連結，立即回傳（背景開始取 metadata，狀態 FETCHING_METADATA）。M6 實作。 */
+    /**
+     * 加入磁力連結，立即回傳（背景開始取 metadata，狀態 FETCHING_METADATA）。
+     * peer 來源：磁力連結的 tr=（tracker）與 x.pe=（直連位址）；DHT 於 M7 加入。
+     */
     public TorrentSession addMagnet(String magnetLink) {
-        throw new UnsupportedOperationException("尚未實作（M6：需要 BEP 9/10 + DHT）");
+        net.derrek.bt4j.metainfo.MagnetUri magnet = net.derrek.bt4j.metainfo.MagnetUri.parse(magnetLink);
+        return sessions.computeIfAbsent(magnet.infoHash(),
+                hash -> DefaultTorrentSession.fromMagnet(magnet, peerId, listenPort, maxPeersPerTorrent));
     }
 
     /** 加入 .torrent 檔（狀態直接 METADATA_READY）。 */

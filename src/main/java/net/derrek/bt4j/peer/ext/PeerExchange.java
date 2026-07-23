@@ -21,12 +21,14 @@ public final class PeerExchange implements Extension {
 
     @Override
     public void onExtensionHandshake(net.derrek.bt4j.peer.PeerConnection connection,
+                                     ExtensionRegistry registry,
                                      net.derrek.bt4j.bencode.BValue.BDictionary handshake) {
         throw new UnsupportedOperationException("尚未實作");
     }
 
     @Override
-    public void onMessage(net.derrek.bt4j.peer.PeerConnection connection, byte[] payload) {
+    public void onMessage(net.derrek.bt4j.peer.PeerConnection connection,
+                          ExtensionRegistry registry, byte[] payload) {
         throw new UnsupportedOperationException("尚未實作");
     }
 }
