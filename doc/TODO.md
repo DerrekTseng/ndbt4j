@@ -70,6 +70,7 @@
 - [ ] `KrpcMessage` 編解碼
 - [ ] `RoutingTable`：bucket、汰換規則
 - [ ] `DhtClient`：bootstrap、迭代 get_peers、announce_peer、token 處理
+  - 已決定：內建 5 個預設 bootstrap 節點（`DhtClient.DEFAULT_BOOTSTRAP_NODES`），`BtClient.Builder.dhtBootstrapNodes()` 可覆寫；路由表隨 resume 持久化，重啟用既有節點暖機
 - [ ] `PeerMessage.Port` 整合（從 peer 學到 DHT 節點）
 - [ ] 驗收：無 tracker 的磁力連結純靠 DHT 完成下載
 

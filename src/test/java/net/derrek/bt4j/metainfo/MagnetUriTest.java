@@ -24,6 +24,15 @@ class MagnetUriTest {
     }
 
     @Test
+    void secondUserProvidedPairAlsoMatches() {
+        // doc/TEST-MAGNETS.md 第 2 組
+        MagnetUri base32 = MagnetUri.parse("magnet:?xt=urn:btih:MFZWDEEO3XQBGD5Z4LWZXBKMD7GEM5AJ");
+        MagnetUri hex = MagnetUri.parse("magnet:?xt=urn:btih:617361908edde0130fb9e2ed9b854c1fcc467409");
+        assertEquals(hex.infoHash(), base32.infoHash());
+        assertEquals("617361908edde0130fb9e2ed9b854c1fcc467409", base32.infoHash().hex());
+    }
+
+    @Test
     void minimalLinkHasNoOptionalParts() {
         MagnetUri uri = MagnetUri.parse(MAGNET_HEX);
         assertTrue(uri.displayName().isEmpty());

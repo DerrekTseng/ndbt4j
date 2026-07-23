@@ -73,6 +73,14 @@ public final class BtClient implements AutoCloseable {
             throw new UnsupportedOperationException("尚未實作");
         }
 
+        /**
+         * 覆寫 DHT bootstrap 節點（預設 {@link net.derrek.bt4j.dht.DhtClient#DEFAULT_BOOTSTRAP_NODES}）。
+         * 僅冷啟動時使用；有 resume 的路由表時優先用既有節點。
+         */
+        public Builder dhtBootstrapNodes(java.util.List<java.net.InetSocketAddress> nodes) {
+            throw new UnsupportedOperationException("尚未實作");
+        }
+
         /** 每個 torrent 的最大 peer 連線數，預設 50。 */
         public Builder maxPeersPerTorrent(int max) {
             throw new UnsupportedOperationException("尚未實作");

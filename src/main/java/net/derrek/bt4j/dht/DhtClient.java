@@ -13,7 +13,18 @@ import net.derrek.bt4j.peer.PeerAddress;
  */
 public final class DhtClient implements AutoCloseable {
 
-    /** 常用 bootstrap 節點：router.bittorrent.com:6881、dht.transmissionbt.com:6881。 */
+    /**
+     * 預設 bootstrap 節點（僅冷啟動時使用；路由表應隨 resume 資料持久化，
+     * 重啟後以既有節點暖機，降低對公共節點的依賴）。
+     * 全部以 unresolved 建立，實際解析延後到啟動時（DNS 失敗個別忽略）。
+     */
+    public static final List<InetSocketAddress> DEFAULT_BOOTSTRAP_NODES = List.of(
+            InetSocketAddress.createUnresolved("router.bittorrent.com", 6881),
+            InetSocketAddress.createUnresolved("router.utorrent.com", 6881),
+            InetSocketAddress.createUnresolved("dht.transmissionbt.com", 6881),
+            InetSocketAddress.createUnresolved("dht.libtorrent.org", 25401),
+            InetSocketAddress.createUnresolved("router.bitcomet.com", 6881));
+
     public DhtClient(int udpPort, List<InetSocketAddress> bootstrapNodes) {
         throw new UnsupportedOperationException("尚未實作");
     }
