@@ -135,8 +135,8 @@ class AntiSnubbingTest {
 
                 try (BtClient client = BtClient.builder().listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
                     DefaultTorrentSession session = (DefaultTorrentSession) client.addTorrent(meta);
-                    // Shorten timings so a snub is detected in ~1s instead of 60s.
-                    session.setChokeTimingForTest(1000, 1_000_000_000L);
+                    // Shorten timings so a snub is detected in ~1s instead of 60s (request timeout left long here).
+                    session.setChokeTimingForTest(1000, 1_000_000_000L, 30_000_000_000L);
 
                     CountDownLatch done = new CountDownLatch(1);
                     session.addListener(new SessionListener() {

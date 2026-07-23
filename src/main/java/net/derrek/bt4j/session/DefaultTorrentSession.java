@@ -78,6 +78,8 @@ final class DefaultTorrentSession implements TorrentSession {
     private static final int OPTIMISTIC_EVERY_ROUNDS = 3;
     /** Anti-snubbing: a peer with outstanding requests that sends no block for this long is considered to be snubbing us. */
     private static final long SNUB_TIMEOUT_NANOS = 60_000_000_000L;
+    /** Per-request timeout: an individual block not delivered this long after we requested it is re-queued (retried elsewhere) rather than waiting out the connection read timeout. */
+    private static final long REQUEST_TIMEOUT_NANOS = 30_000_000_000L;
 
     private final InfoHash infoHash;
     private final PeerId peerId;
@@ -128,6 +130,7 @@ final class DefaultTorrentSession implements TorrentSession {
     // Timing (instance fields so tests can shorten them); default to the constants above.
     private volatile long chokeIntervalMillis = CHOKE_INTERVAL_MILLIS;
     private volatile long snubTimeoutNanos = SNUB_TIMEOUT_NANOS;
+    private volatile long requestTimeoutNanos = REQUEST_TIMEOUT_NANOS;
 
     // Rate calculation: re-sample the delta only every ≥0.5 seconds, so that multiple getters in the same round
     // calling stats() don't each reset the baseline within a few-microsecond window and compute 0 or noisy rates.
@@ -361,6 +364,12 @@ final class DefaultTorrentSession implements TorrentSession {
             }
             runChokeRound(true);
             if (state == SessionState.DOWNLOADING) {
+                long now = System.nanoTime();
+                for (PeerWorker worker : workers.values()) {
+                    if (worker.downloadMode) {
+                        worker.expireStaleRequests(now); // re-queue individual timed-out blocks
+                    }
+                }
                 List<PeerWorker> snubbed = checkSnubbing();
                 topUpPipelines(snubbed);
             }
@@ -819,7 +828,7 @@ final class DefaultTorrentSession implements TorrentSession {
         final PeerConnection connection;
         final ExtensionRegistry registry;
         final PeerExchange pex; // null = disabled (metadata stage or private torrent)
-        final Set<BlockRequest> outstanding = ConcurrentHashMap.newKeySet();
+        final Map<BlockRequest, Long> outstanding = new ConcurrentHashMap<>(); // block -> send time (nanos)
         final Set<Integer> allowedFast = ConcurrentHashMap.newKeySet();
         final boolean downloadMode;
         private volatile boolean peerFast;
@@ -953,7 +962,7 @@ final class DefaultTorrentSession implements TorrentSession {
                 return;
             }
             for (BlockRequest block : picker.pick(connection.peerBitfield(), want)) {
-                if (outstanding.add(block)) {
+                if (outstanding.putIfAbsent(block, System.nanoTime()) == null) {
                     connection.send(new PeerMessage.Request(block.pieceIndex(), block.begin(), block.length()));
                 }
             }
@@ -969,7 +978,7 @@ final class DefaultTorrentSession implements TorrentSession {
                 return;
             }
             for (BlockRequest block : picker.pickFromPiece(pieceIndex, want)) {
-                if (outstanding.add(block)) {
+                if (outstanding.putIfAbsent(block, System.nanoTime()) == null) {
                     connection.send(new PeerMessage.Request(block.pieceIndex(), block.begin(), block.length()));
                 }
             }
@@ -977,16 +986,33 @@ final class DefaultTorrentSession implements TorrentSession {
 
         private void onReject(int pieceIndex, int begin, int length) {
             BlockRequest block = new BlockRequest(pieceIndex, begin, length);
-            if (outstanding.remove(block)) {
+            if (outstanding.remove(block) != null) {
                 picker.onRequestsAbandoned(List.of(block)); // re-enqueue
                 fillPipeline();                              // retry immediately (possibly the same peer, or a different one later)
             }
         }
 
         private void abandonOutstanding() {
-            List<BlockRequest> lost = new ArrayList<>(outstanding);
+            List<BlockRequest> lost = new ArrayList<>(outstanding.keySet());
             outstanding.clear();
             picker.onRequestsAbandoned(lost);
+        }
+
+        /** Re-queue individual blocks not delivered within the request timeout (retried elsewhere), keeping the connection. */
+        private void expireStaleRequests(long now) {
+            List<BlockRequest> expired = new ArrayList<>();
+            for (Map.Entry<BlockRequest, Long> entry : outstanding.entrySet()) {
+                if (now - entry.getValue() > requestTimeoutNanos) {
+                    expired.add(entry.getKey());
+                }
+            }
+            if (expired.isEmpty()) {
+                return;
+            }
+            for (BlockRequest block : expired) {
+                outstanding.remove(block);
+            }
+            picker.onRequestsAbandoned(expired);
         }
 
         private void onBlock(int pieceIndex, int begin, byte[] data) {
@@ -1088,10 +1114,11 @@ final class DefaultTorrentSession implements TorrentSession {
         return bannedPeers.size();
     }
 
-    /** For testing: shorten the choke-round interval and snub timeout so anti-snubbing can be exercised quickly. */
-    void setChokeTimingForTest(long chokeIntervalMillis, long snubTimeoutNanos) {
+    /** For testing: shorten the choke-round interval, snub timeout, and per-request timeout so they can be exercised quickly. */
+    void setChokeTimingForTest(long chokeIntervalMillis, long snubTimeoutNanos, long requestTimeoutNanos) {
         this.chokeIntervalMillis = chokeIntervalMillis;
         this.snubTimeoutNanos = snubTimeoutNanos;
+        this.requestTimeoutNanos = requestTimeoutNanos;
     }
 
     /**

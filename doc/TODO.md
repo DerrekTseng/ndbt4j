@@ -122,6 +122,7 @@
 - [x] anti-snubbing：peer 接受 request 卻超過 60s 不給資料視為 snub，放棄其 outstanding 並重分配給有回應的 peer（不必等 150s read timeout）；每 choke round 檢查
 - [x] 自適應 pipeline 深度：outstanding 請求數依 peer 近期速率縮放（16~256），快 peer 更深、慢 peer 不囤積
 - [x] 依 RTT 微調 pipeline：深度改用頻寬-延遲乘積（rate × RTT × headroom / block），RTT 以「pipeline 空時發出的 request 到 block 到達」的延遲量測、取衰減最小值（避免深 pipeline 造成正回饋）；低延遲 peer 用淺 pipeline（省記憶體、choke 反應快），高延遲 peer 用深 pipeline 避免停頓。純函式 `pipelineDepth` 可單元測試
+- [x] 單一 request 逾時重送：`outstanding` 改帶送出時間戳，每 choke round `expireStaleRequests` 把超過 30s 未到貨的個別 block 重新排入（換 peer 重試），不必等整條連線 150s read timeout；補 `PerRequestTimeoutTest`（peer 丟掉單一 block 但仍活躍，只有 per-request 逾時能救）
 - [x] 全部程式碼註解 / Javadoc / log 訊息改英文（README、doc/README、CLAUDE.md 同步）
 - 註：super-seeding 未做——它是做種端散播效率機制，對下載速度無幫助
 
