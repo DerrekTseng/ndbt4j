@@ -15,6 +15,8 @@ import net.derrek.bt4j.peer.PeerAddress;
  */
 public final class TrackerManager implements AutoCloseable {
 
+    private static final System.Logger LOG = System.getLogger(TrackerManager.class.getName());
+
     /** tracker 回報 interval 的上限（保持找 peer 的靈敏度）。 */
     private static final Duration MAX_INTERVAL = Duration.ofMinutes(5);
     private static final Duration RETRY_DELAY = Duration.ofSeconds(30);
@@ -119,10 +121,11 @@ public final class TrackerManager implements AutoCloseable {
                     }
                     return response.interval();
                 } catch (TrackerException | RuntimeException e) {
-                    // 換下一個 tracker
+                    LOG.log(System.Logger.Level.DEBUG, () -> "tracker " + tracker.uri() + " announce 失敗: " + e.getMessage());
                 }
             }
         }
+        LOG.log(System.Logger.Level.WARNING, () -> "所有 tracker 皆 announce 失敗（event=" + event + "），" + RETRY_DELAY.toSeconds() + "s 後重試");
         return null;
     }
 }

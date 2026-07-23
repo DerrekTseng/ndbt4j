@@ -1,6 +1,11 @@
 package net.derrek.bt4j.session;
 
+import java.io.IOException;
+import java.lang.System.Logger;
+import java.lang.System.Logger.Level;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -9,12 +14,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import net.derrek.bt4j.dht.DhtClient;
 import net.derrek.bt4j.metainfo.InfoHash;
 import net.derrek.bt4j.metainfo.Metainfo;
+import net.derrek.bt4j.peer.Handshake;
 import net.derrek.bt4j.peer.PeerId;
 import net.derrek.bt4j.storage.ResumeData;
 
 /**
  * 套件對外入口。一個程序通常只建一個實例：
- * 持有 listen socket、DHT、peer id，管理多個 {@link TorrentSession}。
+ * 持有 listen socket（接受連入 peer）、DHT、peer id，管理多個 {@link TorrentSession}。
  *
  * <pre>{@code
  * try (var client = BtClient.builder().listenPort(6881).build()) {
@@ -27,15 +33,34 @@ import net.derrek.bt4j.storage.ResumeData;
  */
 public final class BtClient implements AutoCloseable {
 
+    private static final Logger LOG = System.getLogger(BtClient.class.getName());
+
     private final PeerId peerId = PeerId.generate();
     private final int listenPort;
     private final int maxPeersPerTorrent;
     private final DhtClient dht; // null = 停用
     private final Map<InfoHash, TorrentSession> sessions = new ConcurrentHashMap<>();
 
+    private final ServerSocket listenSocket;
+    private volatile boolean closed;
+
     private BtClient(Builder builder) {
-        this.listenPort = builder.listenPort;
         this.maxPeersPerTorrent = builder.maxPeersPerTorrent;
+        // 先綁定 TCP listen socket 取得實際 port（builder.listenPort=0 時由系統指派），
+        // 再讓 DHT 與 session 使用同一個實際 port 對外宣告。
+        ServerSocket ls = null;
+        try {
+            ls = new ServerSocket();
+            ls.setReuseAddress(true);
+            ls.bind(new InetSocketAddress(builder.listenPort));
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "無法綁定 listen port " + builder.listenPort
+                    + "，將只能主動連出（無法接受連入）", e);
+            ls = null;
+        }
+        this.listenSocket = ls;
+        this.listenPort = ls != null ? ls.getLocalPort() : builder.listenPort;
+
         if (builder.dhtEnabled) {
             DhtClient client = new DhtClient(listenPort, builder.dhtBootstrapNodes);
             client.start();
@@ -43,15 +68,64 @@ public final class BtClient implements AutoCloseable {
         } else {
             this.dht = null;
         }
+        if (listenSocket != null) {
+            Thread.ofVirtual().name("bt4j-accept").start(this::acceptLoop);
+            LOG.log(Level.DEBUG, () -> "接受連入 peer 於 TCP port " + listenPort);
+        }
     }
 
     public static Builder builder() {
         return new Builder();
     }
 
+    /** 實際綁定的 TCP listen port（builder 傳 0 時為系統指派的 port）。 */
+    public int listenPort() {
+        return listenPort;
+    }
+
+    private void acceptLoop() {
+        while (!closed) {
+            Socket socket;
+            try {
+                socket = listenSocket.accept();
+            } catch (IOException e) {
+                if (!closed) {
+                    LOG.log(Level.DEBUG, () -> "accept 失敗: " + e.getMessage());
+                }
+                return;
+            }
+            Thread.ofVirtual().name("bt4j-incoming").start(() -> routeIncoming(socket));
+        }
+    }
+
+    /** 讀出連入 peer 的 handshake，依 info-hash 交給對應的 session。 */
+    private void routeIncoming(Socket socket) {
+        try {
+            socket.setSoTimeout(10_000);
+            // 精確讀出 68 bytes handshake（不緩衝，後續由 PeerConnection 接手同一 socket）
+            byte[] raw = socket.getInputStream().readNBytes(Handshake.LENGTH);
+            if (raw.length != Handshake.LENGTH) {
+                socket.close();
+                return;
+            }
+            Handshake theirs = Handshake.decode(raw);
+            TorrentSession session = sessions.get(theirs.infoHash());
+            if (session instanceof DefaultTorrentSession dts) {
+                dts.acceptIncoming(socket, theirs);
+            } else {
+                socket.close(); // 未知 torrent
+            }
+        } catch (IOException | RuntimeException e) {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
     /**
      * 加入磁力連結，立即回傳（背景開始取 metadata，狀態 FETCHING_METADATA）。
-     * peer 來源：磁力連結的 tr=（tracker）與 x.pe=（直連位址）；DHT 於 M7 加入。
+     * peer 來源：磁力連結的 tr=（tracker）、x.pe=（直連位址）與 DHT。
      */
     public TorrentSession addMagnet(String magnetLink) {
         net.derrek.bt4j.metainfo.MagnetUri magnet = net.derrek.bt4j.metainfo.MagnetUri.parse(magnetLink);
@@ -69,9 +143,13 @@ public final class BtClient implements AutoCloseable {
                 hash -> new DefaultTorrentSession(metainfo, peerId, listenPort, maxPeersPerTorrent, dht));
     }
 
-    /** 伺服器重啟後由 resume 資料恢復 session（不重新下載已完成 piece）。M8 實作。 */
+    /**
+     * 伺服器重啟後由 resume 資料恢復 session（不重新下載已完成 piece，跳過已驗證部分）。
+     * resume 資料自足（內嵌 metadata），無需另外提供 .torrent。
+     */
     public TorrentSession restore(ResumeData resumeData) {
-        throw new UnsupportedOperationException("尚未實作（M8）");
+        return sessions.computeIfAbsent(resumeData.infoHash(),
+                hash -> DefaultTorrentSession.fromResume(resumeData, peerId, listenPort, maxPeersPerTorrent, dht));
     }
 
     public List<TorrentSession> sessions() {
@@ -89,6 +167,14 @@ public final class BtClient implements AutoCloseable {
     /** 關閉所有 session、DHT 與 listen socket。 */
     @Override
     public void close() {
+        closed = true;
+        ServerSocket ls = listenSocket;
+        if (ls != null) {
+            try {
+                ls.close();
+            } catch (IOException ignored) {
+            }
+        }
         for (TorrentSession session : sessions.values()) {
             session.close();
         }
@@ -108,16 +194,19 @@ public final class BtClient implements AutoCloseable {
         private Builder() {
         }
 
-        /** peer wire 的 TCP listen port，同時作為 DHT UDP port。預設 6881。 */
+        /**
+         * peer wire 的 TCP listen port，同時作為 DHT UDP port。預設 6881；
+         * 傳 0 表示由系統指派（實際 port 見 {@link BtClient#listenPort()}）。
+         */
         public Builder listenPort(int port) {
-            if (port < 1 || port > 65535) {
+            if (port < 0 || port > 65535) {
                 throw new IllegalArgumentException("port 超出範圍: " + port);
             }
             this.listenPort = port;
             return this;
         }
 
-        /** 停用 DHT（預設啟用）。private torrent 無論此設定皆不用 DHT。（M7 生效） */
+        /** 停用 DHT（預設啟用）。private torrent 無論此設定皆不用 DHT。 */
         public Builder dhtEnabled(boolean enabled) {
             this.dhtEnabled = enabled;
             return this;
@@ -125,7 +214,7 @@ public final class BtClient implements AutoCloseable {
 
         /**
          * 覆寫 DHT bootstrap 節點（預設 {@link DhtClient#DEFAULT_BOOTSTRAP_NODES}）。
-         * 僅冷啟動時使用；有 resume 的路由表時優先用既有節點。（M7 生效）
+         * 僅冷啟動時使用；有 resume 的路由表時優先用既有節點。
          */
         public Builder dhtBootstrapNodes(List<InetSocketAddress> nodes) {
             this.dhtBootstrapNodes = List.copyOf(nodes);

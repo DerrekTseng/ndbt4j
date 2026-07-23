@@ -20,6 +20,8 @@ import java.util.OptionalInt;
  */
 public final class UdpTracker implements Tracker {
 
+    private static final System.Logger LOG = System.getLogger(UdpTracker.class.getName());
+
     private static final long PROTOCOL_MAGIC = 0x41727101980L;
     private static final int ACTION_CONNECT = 0;
     private static final int ACTION_ANNOUNCE = 1;
@@ -64,7 +66,10 @@ public final class UdpTracker implements Tracker {
             }
             ensureSocket();
             ensureConnection(target);
-            return doAnnounce(target, request);
+            AnnounceResponse result = doAnnounce(target, request);
+            LOG.log(System.Logger.Level.DEBUG, () -> "UDP tracker " + uri + " 回應 "
+                    + result.peers().size() + " 個 peer（interval=" + result.interval().toSeconds() + "s）");
+            return result;
         } catch (IOException e) {
             throw new TrackerException("UDP tracker 通訊失敗: " + uri, e);
         }

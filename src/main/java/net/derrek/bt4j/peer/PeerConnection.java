@@ -5,6 +5,8 @@ import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.lang.System.Logger;
+import java.lang.System.Logger.Level;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.concurrent.BlockingQueue;
@@ -23,6 +25,8 @@ import net.derrek.bt4j.piece.Bitfield;
  * {@link Listener} 回呼一律在讀迴圈 thread 上執行。
  */
 public final class PeerConnection implements AutoCloseable {
+
+    private static final Logger LOG = System.getLogger(PeerConnection.class.getName());
 
     private static final int CONNECT_TIMEOUT_MILLIS = 10_000;
     private static final int READ_TIMEOUT_MILLIS = 150_000;
@@ -48,6 +52,10 @@ public final class PeerConnection implements AutoCloseable {
     private final BlockingQueue<PeerMessage> sendQueue = new LinkedBlockingQueue<>();
     private final AtomicBoolean closed = new AtomicBoolean();
 
+    /** 連入連線：預先接受的 socket 與已讀出的對方 handshake（outgoing 時皆為 null）。 */
+    private final Socket incomingSocket;
+    private final Handshake incomingHandshake;
+
     private volatile Socket socket;
     private volatile Thread writeThread;
     private volatile boolean amChoking = true;
@@ -58,12 +66,15 @@ public final class PeerConnection implements AutoCloseable {
     private Bitfield peerBitfield; // 只在讀迴圈 thread 寫入
 
     private PeerConnection(PeerAddress address, InfoHash infoHash, PeerId localId, int pieceCount,
-                           boolean advertiseDht, Listener listener) {
+                           boolean advertiseDht, Socket incomingSocket, Handshake incomingHandshake,
+                           Listener listener) {
         this.address = address;
         this.infoHash = infoHash;
         this.localId = localId;
         this.pieceCount = pieceCount;
         this.advertiseDht = advertiseDht;
+        this.incomingSocket = incomingSocket;
+        this.incomingHandshake = incomingHandshake;
         this.listener = listener;
         // pieceCount <= 0：magnet 情境 metadata 未知，先給最小 bitfield（bitfield 訊息到達時取代）
         this.peerBitfield = new Bitfield(Math.max(1, pieceCount));
@@ -72,12 +83,18 @@ public final class PeerConnection implements AutoCloseable {
     /** 主動連出。建構後呼叫 {@link #start()} 才開始 IO。 */
     public static PeerConnection outgoing(PeerAddress address, InfoHash infoHash, PeerId localId,
                                           int pieceCount, boolean advertiseDht, Listener listener) {
-        return new PeerConnection(address, infoHash, localId, pieceCount, advertiseDht, listener);
+        return new PeerConnection(address, infoHash, localId, pieceCount, advertiseDht, null, null, listener);
     }
 
-    /** 被動連入（M9 實作：先讀對方 handshake 以決定所屬 torrent）。 */
-    public static PeerConnection incoming(Socket socket, Listener listener) {
-        throw new UnsupportedOperationException("尚未實作（M9）");
+    /**
+     * 被動連入：呼叫端（BtClient）已 accept socket 並讀出對方 handshake 以決定所屬 torrent。
+     * 本連線負責回送我方 handshake 並進入訊息迴圈。
+     */
+    public static PeerConnection incoming(Socket socket, Handshake theirHandshake, InfoHash infoHash,
+                                          PeerId localId, int pieceCount, boolean advertiseDht, Listener listener) {
+        InetSocketAddress remote = (InetSocketAddress) socket.getRemoteSocketAddress();
+        return new PeerConnection(new PeerAddress(remote), infoHash, localId, pieceCount, advertiseDht,
+                socket, theirHandshake, listener);
     }
 
     /** 啟動讀寫 virtual thread、進行 handshake。立即回傳。 */
@@ -87,32 +104,49 @@ public final class PeerConnection implements AutoCloseable {
 
     private void runRead() {
         try {
-            Socket s = new Socket();
-            this.socket = s;
-            if (closed.get()) {
-                s.close();
-                return;
-            }
-            s.connect(resolve(address.socketAddress()), CONNECT_TIMEOUT_MILLIS);
-            s.setSoTimeout(READ_TIMEOUT_MILLIS);
-            s.setTcpNoDelay(true);
-            DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
-            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
-
-            out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, false).encode());
-            out.flush();
-            byte[] response = in.readNBytes(Handshake.LENGTH);
-            if (response.length != Handshake.LENGTH) {
-                throw new IOException("handshake 未完成即斷線");
-            }
+            DataInputStream in;
+            DataOutputStream out;
             Handshake theirs;
-            try {
-                theirs = Handshake.decode(response);
-            } catch (IllegalArgumentException e) {
-                throw new IOException("handshake 格式錯誤", e);
-            }
-            if (!theirs.infoHash().equals(infoHash)) {
-                throw new IOException("對方 info-hash 不符");
+            if (incomingSocket != null) {
+                Socket s = incomingSocket;
+                this.socket = s;
+                s.setSoTimeout(READ_TIMEOUT_MILLIS);
+                s.setTcpNoDelay(true);
+                in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
+                out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
+                // 對方 handshake 已由呼叫端讀出並驗證 info-hash；回送我方 handshake
+                out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, false).encode());
+                out.flush();
+                theirs = incomingHandshake;
+                LOG.log(Level.DEBUG, () -> "連入連線建立: " + address);
+            } else {
+                Socket s = new Socket();
+                this.socket = s;
+                if (closed.get()) {
+                    s.close();
+                    return;
+                }
+                s.connect(resolve(address.socketAddress()), CONNECT_TIMEOUT_MILLIS);
+                s.setSoTimeout(READ_TIMEOUT_MILLIS);
+                s.setTcpNoDelay(true);
+                in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
+                out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
+
+                out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, false).encode());
+                out.flush();
+                byte[] response = in.readNBytes(Handshake.LENGTH);
+                if (response.length != Handshake.LENGTH) {
+                    throw new IOException("handshake 未完成即斷線");
+                }
+                try {
+                    theirs = Handshake.decode(response);
+                } catch (IllegalArgumentException e) {
+                    throw new IOException("handshake 格式錯誤", e);
+                }
+                if (!theirs.infoHash().equals(infoHash)) {
+                    throw new IOException("對方 info-hash 不符");
+                }
+                LOG.log(Level.DEBUG, () -> "連出連線握手完成: " + address);
             }
             this.theirHandshake = theirs;
             this.writeThread = Thread.ofVirtual().name("bt4j-peer-write-" + address).start(() -> runWrite(out));
@@ -120,10 +154,14 @@ public final class PeerConnection implements AutoCloseable {
 
             while (!closed.get()) {
                 PeerMessage message = PeerMessage.read(in, pieceCount);
+                LOG.log(Level.TRACE, () -> "收到 " + address + " -> " + message.getClass().getSimpleName());
                 handleInternal(message);
                 listener.onMessage(this, message);
             }
         } catch (IOException e) {
+            if (!closed.get()) {
+                LOG.log(Level.DEBUG, () -> "連線 " + address + " 中斷: " + e.getMessage());
+            }
             closeInternal(closed.get() ? null : e);
         }
     }

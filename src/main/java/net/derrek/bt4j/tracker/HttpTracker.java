@@ -21,6 +21,8 @@ import net.derrek.bt4j.peer.PeerAddress;
  */
 public final class HttpTracker implements Tracker {
 
+    private static final System.Logger LOG = System.getLogger(HttpTracker.class.getName());
+
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(20);
     private static final Duration DEFAULT_INTERVAL = Duration.ofMinutes(30);
@@ -61,7 +63,10 @@ public final class HttpTracker implements Tracker {
         if (response.statusCode() != 200) {
             throw new TrackerException("tracker 回應 HTTP " + response.statusCode() + ": " + uri);
         }
-        return parseResponse(response.body());
+        AnnounceResponse result = parseResponse(response.body());
+        LOG.log(System.Logger.Level.DEBUG, () -> "HTTP tracker " + uri + " 回應 "
+                + result.peers().size() + " 個 peer（interval=" + result.interval().toSeconds() + "s）");
+        return result;
     }
 
     /** 組 announce 查詢字串。info_hash / peer_id 是原始 20 bytes 逐位元組 percent-encode。 */

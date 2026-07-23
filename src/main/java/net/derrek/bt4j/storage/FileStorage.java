@@ -25,6 +25,8 @@ import net.derrek.bt4j.piece.PieceSelection;
  */
 public final class FileStorage implements Storage {
 
+    private static final System.Logger LOG = System.getLogger(FileStorage.class.getName());
+
     private final Metainfo metainfo;
     private final PieceSelection selection;
     private final Path root;
@@ -37,10 +39,17 @@ public final class FileStorage implements Storage {
      * @param saveTo 下載根目錄（檔案路徑 = saveTo/FileEntry.path…；多檔 torrent 的第一層即 torrent name）
      */
     public FileStorage(Metainfo metainfo, PieceSelection selection, Path saveTo) {
+        this(metainfo, selection, saveTo, new Bitfield(metainfo.pieceCount()));
+    }
+
+    /**
+     * resume 用：以既有的已完成 piece 集合建立（其資料視為已在磁碟上，之前驗證通過才會被標記）。
+     */
+    public FileStorage(Metainfo metainfo, PieceSelection selection, Path saveTo, Bitfield alreadyCompleted) {
         this.metainfo = metainfo;
         this.selection = selection;
         this.root = saveTo;
-        this.completed = new Bitfield(metainfo.pieceCount());
+        this.completed = alreadyCompleted.copy();
     }
 
     @Override
@@ -77,10 +86,12 @@ public final class FileStorage implements Storage {
         }
         pieceBuffers.remove(pieceIndex);
         if (!java.util.Arrays.equals(sha1(buffer), metainfo.pieceHash(pieceIndex))) {
+            LOG.log(System.Logger.Level.DEBUG, () -> "piece " + pieceIndex + " SHA-1 驗證失敗，丟棄重下");
             return false;
         }
         writeVerifiedPiece(pieceIndex, buffer);
         completed.set(pieceIndex);
+        LOG.log(System.Logger.Level.TRACE, () -> "piece " + pieceIndex + " 驗證通過並落地");
         return true;
     }
 

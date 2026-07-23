@@ -23,6 +23,8 @@ import net.derrek.bt4j.bencode.Bencode;
  */
 public final class Metainfo {
 
+    private static final System.Logger LOG = System.getLogger(Metainfo.class.getName());
+
     private final byte[] infoDictBytes;
     private final InfoHash infoHash;
     private final String name;
@@ -61,6 +63,8 @@ public final class Metainfo {
                     "piece 數不一致：依檔案總長 " + totalLength + " 應為 " + expectedPieces + "，pieces 欄位有 " + pieces.length / 20);
         }
         this.isPrivate = info.get("private").orElse(null) instanceof BValue.BInteger(long v) && v == 1;
+        LOG.log(System.Logger.Level.TRACE, () -> "解析 metainfo: " + name + "（" + files.size()
+                + " 檔案, " + pieceCount() + " pieces, private=" + isPrivate + "）");
     }
 
     // ---- 建構 ----

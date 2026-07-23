@@ -12,8 +12,15 @@ BitTorrent 下載套件（library），純 Java 實作。
 ## 程式結構
 
 - 根 package：`net.derrek.bt4j`（bencode / metainfo / tracker / dht / peer / peer.ext / piece / storage / session）。
-- 所有類別骨架已建立，方法本體為 `UnsupportedOperationException("尚未實作")`，依 `doc/TODO.md` 逐項實作。
 - 對外 API 入口：`session.BtClient` 與 `session.TorrentSession`。
+- 進度見 `doc/TODO.md`：M0–M8 已完成（含磁力連結、DHT、做種、resume），M9 為擴充功能。
+
+## Logging
+
+- 一律用 JDK 內建 `System.Logger`（`System.getLogger(Xxx.class.getName())`），維持零依賴。
+- **只用 WARNING / ERROR / DEBUG / TRACE 四個等級，不使用 INFO。**
+- DEBUG/TRACE 訊息用 lambda supplier（`LOG.log(Level.DEBUG, () -> ...)`）避免未啟用時的字串成本。
+- 引用方要導向 slf4j/logback：在「引用方」專案加 `org.slf4j:slf4j-jdk-platform-logging`，bt4j 本身不加任何依賴。
 
 ## 設計
 

@@ -1,6 +1,10 @@
 package net.derrek.bt4j.session;
 
 import java.io.IOException;
+import java.lang.System.Logger;
+import java.lang.System.Logger.Level;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -9,6 +13,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
@@ -16,6 +21,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
+import net.derrek.bt4j.dht.DhtClient;
 import net.derrek.bt4j.metainfo.FileEntry;
 import net.derrek.bt4j.metainfo.InfoHash;
 import net.derrek.bt4j.metainfo.MagnetUri;
@@ -40,22 +46,27 @@ import net.derrek.bt4j.tracker.TrackerManager;
 
 /**
  * TorrentSession 的預設實作。
- * 來源可為 .torrent（直接 METADATA_READY）或磁力連結
- * （FETCHING_METADATA：以 tracker/x.pe 找 peer，經 BEP 10/9 取得 metadata 後轉 METADATA_READY）。
+ * 來源可為 .torrent（直接 METADATA_READY）、磁力連結（FETCHING_METADATA → BEP 10/9 取 metadata），
+ * 或 resume 資料（重啟續傳，跳過已完成 piece）。
+ * 下載完成後進入 SEEDING 並回應他人的 Request（上傳）；stopSeeding 手動關閉上傳。
  */
 final class DefaultTorrentSession implements TorrentSession {
 
+    private static final Logger LOG = System.getLogger(DefaultTorrentSession.class.getName());
+
     /** 每連線同時外送的 request 數（pipeline 深度）。 */
     private static final int PIPELINE_DEPTH = 16;
+    /** 單一上傳 block 的長度上限（防惡意 Request 要求超大區塊）。 */
+    private static final int MAX_UPLOAD_BLOCK = 128 * 1024;
 
     private final InfoHash infoHash;
     private final PeerId peerId;
     private final int listenPort;
     private final int maxPeers;
-    private final net.derrek.bt4j.dht.DhtClient dht; // null = 停用
+    private final DhtClient dht; // null = 停用
     private final List<java.net.URI> magnetTrackers;
     private final MetadataExchange metadataExchange;
-    private final java.util.concurrent.CompletableFuture<Metainfo> metadataFuture = new java.util.concurrent.CompletableFuture<>();
+    private final CompletableFuture<Metainfo> metadataFuture = new CompletableFuture<>();
 
     private final List<SessionListener> listeners = new CopyOnWriteArrayList<>();
     private final Map<PeerAddress, PeerWorker> workers = new ConcurrentHashMap<>();
@@ -84,8 +95,7 @@ final class DefaultTorrentSession implements TorrentSession {
     private long lastUploaded;
 
     /** .torrent 來源。 */
-    DefaultTorrentSession(Metainfo metainfo, PeerId peerId, int listenPort, int maxPeers,
-                          net.derrek.bt4j.dht.DhtClient dht) {
+    DefaultTorrentSession(Metainfo metainfo, PeerId peerId, int listenPort, int maxPeers, DhtClient dht) {
         this.infoHash = metainfo.infoHash();
         this.metainfo = metainfo;
         this.peerId = peerId;
@@ -99,8 +109,7 @@ final class DefaultTorrentSession implements TorrentSession {
         this.state = SessionState.METADATA_READY;
     }
 
-    private DefaultTorrentSession(MagnetUri magnet, PeerId peerId, int listenPort, int maxPeers,
-                                  net.derrek.bt4j.dht.DhtClient dht) {
+    private DefaultTorrentSession(MagnetUri magnet, PeerId peerId, int listenPort, int maxPeers, DhtClient dht) {
         this.infoHash = magnet.infoHash();
         this.peerId = peerId;
         this.listenPort = listenPort;
@@ -113,9 +122,20 @@ final class DefaultTorrentSession implements TorrentSession {
 
     /** 磁力連結來源：建立後立即開始背景取 metadata。 */
     static DefaultTorrentSession fromMagnet(MagnetUri magnet, PeerId peerId, int listenPort, int maxPeers,
-                                            net.derrek.bt4j.dht.DhtClient dht) {
+                                            DhtClient dht) {
         DefaultTorrentSession session = new DefaultTorrentSession(magnet, peerId, listenPort, maxPeers, dht);
+        LOG.log(Level.DEBUG, () -> "加入磁力連結 " + magnet.infoHash().hex()
+                + "（tracker=" + magnet.trackers().size() + ", x.pe=" + magnet.peers().size() + ")");
         session.beginMetadataPhase(magnet);
+        return session;
+    }
+
+    /** resume 來源：重啟續傳（跳過已完成 piece）。 */
+    static DefaultTorrentSession fromResume(ResumeData resume, PeerId peerId, int listenPort, int maxPeers,
+                                            DhtClient dht) {
+        Metainfo meta = resume.metainfo();
+        DefaultTorrentSession session = new DefaultTorrentSession(meta, peerId, listenPort, maxPeers, dht);
+        session.restoreState(resume);
         return session;
     }
 
@@ -131,11 +151,37 @@ final class DefaultTorrentSession implements TorrentSession {
         startDhtLoop();
     }
 
+    private void restoreState(ResumeData resume) {
+        this.plan = new DownloadPlan(resume.saveTo(), resume.selectedFileIndices(), true);
+        this.selection = PieceSelection.of(metainfo, resume.selectedFileIndices());
+        this.storage = new FileStorage(metainfo, selection, resume.saveTo(), resume.completedPieces());
+        this.picker = new RarestFirstPicker(metainfo, selection, storage.completedPieces());
+        this.uploadedBytes.set(resume.uploaded());
+        Bitfield completed = storage.completedPieces();
+        long done = 0;
+        for (int p = 0; p < metainfo.pieceCount(); p++) {
+            if (completed.get(p) && selection.isWanted(p)) {
+                done += selection.wantedBytesInPiece(p);
+            }
+        }
+        verifiedWantedBytes.set(done);
+        LOG.log(Level.DEBUG, () -> "restore " + infoHash.hex() + "：已完成 "
+                + completed.cardinality() + "/" + metainfo.pieceCount() + " pieces，stopped=" + resume.seedingStopped());
+
+        if (resume.seedingStopped()) {
+            setState(SessionState.STOPPED); // 使用者先前已關閉上傳，不啟動網路
+            return;
+        }
+        setState(picker.isComplete() ? SessionState.SEEDING : SessionState.DOWNLOADING);
+        launchNetworking();
+    }
+
     private void onMetadataFetched(byte[] infoDictBytes) {
         Metainfo fetched;
         try {
             fetched = Metainfo.fromInfoDict(infoDictBytes, magnetTrackers);
         } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "由磁力連結重建 metadata 失敗: " + infoHash.hex(), e);
             fail(e);
             return;
         }
@@ -147,6 +193,7 @@ final class DefaultTorrentSession implements TorrentSession {
             teardownPeerMachinery(); // metadata 階段的連線收掉，下載階段以正確 pieceCount 重連
             setState(SessionState.METADATA_READY);
         }
+        LOG.log(Level.DEBUG, () -> "metadata 就緒: " + fetched.name() + "（" + fetched.files().size() + " 個檔案）");
         synchronized (listenerLock) {
             for (SessionListener listener : listeners) {
                 listener.onMetadataReady(this, fetched);
@@ -187,20 +234,17 @@ final class DefaultTorrentSession implements TorrentSession {
     public void start(DownloadPlan plan) {
         synchronized (lock) {
             if (state != SessionState.METADATA_READY) {
-                throw new IllegalStateException("目前狀態 " + state + " 不可 start（變更計畫將於 M4 支援）");
+                throw new IllegalStateException("目前狀態 " + state + " 不可 start（變更計畫將於後續支援）");
             }
             this.plan = plan;
             this.selection = PieceSelection.of(metainfo, plan.selectedFileIndices());
             this.storage = new FileStorage(metainfo, selection, plan.saveTo());
             this.picker = new RarestFirstPicker(metainfo, selection, storage.completedPieces());
             setState(SessionState.DOWNLOADING);
-            List<List<Tracker>> tiers = buildTiers();
-            if (!tiers.isEmpty()) {
-                this.trackerManager = new TrackerManager(tiers, this::request, this::onPeersFound);
-                this.trackerManager.start();
-            }
-            this.connectorThread = Thread.ofVirtual().name("bt4j-connect-" + infoHash.hex()).start(this::connectorLoop);
-            startDhtLoop();
+            LOG.log(Level.DEBUG, () -> "開始下載 " + metainfo.name() + " → " + plan.saveTo()
+                    + "（勾選 " + (plan.selectedFileIndices().isEmpty() ? "全部" : plan.selectedFileIndices().size() + " 個")
+                    + " 檔案，共 " + selection.wantedPieceCount() + " pieces）");
+            launchNetworking();
         }
         // 磁力連結情境：metadata 階段已知的 peer 直接重新排入
         for (PeerAddress peer : knownPeers) {
@@ -208,7 +252,21 @@ final class DefaultTorrentSession implements TorrentSession {
         }
     }
 
-    /** 週期性 DHT 找 peer；private torrent（BEP 27）不啟用。 */
+    /** 啟動 tracker 排程、DHT 迴圈與（下載中才需要的）peer 連接器。 */
+    private void launchNetworking() {
+        List<List<Tracker>> tiers = buildTiers();
+        if (!tiers.isEmpty()) {
+            this.trackerManager = new TrackerManager(tiers, this::request, this::onPeersFound);
+            this.trackerManager.start();
+        }
+        if (state == SessionState.DOWNLOADING) {
+            this.connectorThread = Thread.ofVirtual()
+                    .name("bt4j-connect-" + infoHash.hex()).start(this::connectorLoop);
+        }
+        startDhtLoop();
+    }
+
+    /** 週期性 DHT 找 peer / 宣告；private torrent（BEP 27）不啟用。 */
     private void startDhtLoop() {
         Metainfo meta = metainfo;
         if (dht == null || (meta != null && meta.isPrivate())) {
@@ -219,15 +277,18 @@ final class DefaultTorrentSession implements TorrentSession {
 
     private void dhtLoop() {
         boolean announced = false;
-        while (state == SessionState.FETCHING_METADATA || state == SessionState.DOWNLOADING) {
-            try {
-                onPeersFound(dht.findPeers(infoHash).get(60, TimeUnit.SECONDS));
-            } catch (InterruptedException e) {
-                return;
-            } catch (ExecutionException | TimeoutException ignored) {
+        while (isActive()) {
+            if (state == SessionState.FETCHING_METADATA || state == SessionState.DOWNLOADING) {
+                try {
+                    onPeersFound(dht.findPeers(infoHash).get(60, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    return;
+                } catch (ExecutionException | TimeoutException ignored) {
+                }
             }
-            if (!announced && state == SessionState.DOWNLOADING) {
-                dht.announce(infoHash, listenPort); // 背景進行，不等待
+            // 有資料可分享（下載中/做種）就宣告自己是 peer
+            if (!announced && storage != null && storage.completedPieces().cardinality() > 0) {
+                dht.announce(infoHash, listenPort);
                 announced = true;
             }
             try {
@@ -238,12 +299,19 @@ final class DefaultTorrentSession implements TorrentSession {
         }
     }
 
+    private boolean isActive() {
+        return state == SessionState.FETCHING_METADATA
+                || state == SessionState.DOWNLOADING
+                || state == SessionState.SEEDING;
+    }
+
     @Override
     public void stopSeeding() {
         synchronized (lock) {
             if (state == SessionState.STOPPED || state == SessionState.ERROR) {
                 return;
             }
+            LOG.log(Level.DEBUG, () -> "停止做種 " + infoHash.hex());
             setState(SessionState.STOPPED);
         }
         metadataFuture.cancel(true);
@@ -296,10 +364,13 @@ final class DefaultTorrentSession implements TorrentSession {
     @Override
     public ResumeData resumeData() {
         Metainfo meta = metainfo;
+        if (meta == null) {
+            throw new IllegalStateException("metadata 尚未就緒，無法產生 resume 資料");
+        }
         FileStorage st = storage;
         DownloadPlan p = plan;
-        return new ResumeData(infoHash,
-                st != null ? st.completedPieces() : new Bitfield(meta == null ? 1 : meta.pieceCount()),
+        return new ResumeData(meta.toTorrentBytes(),
+                st != null ? st.completedPieces() : new Bitfield(meta.pieceCount()),
                 p == null ? Set.of() : p.selectedFileIndices(),
                 p == null ? null : p.saveTo(),
                 uploadedBytes.get(),
@@ -326,6 +397,7 @@ final class DefaultTorrentSession implements TorrentSession {
             return;
         }
         state = newState;
+        LOG.log(Level.DEBUG, () -> "狀態 " + old + " → " + newState + "（" + infoHash.hex() + "）");
         for (SessionListener listener : listeners) {
             listener.onStateChanged(this, old, newState);
         }
@@ -336,6 +408,7 @@ final class DefaultTorrentSession implements TorrentSession {
             if (state == SessionState.STOPPED || state == SessionState.ERROR) {
                 return;
             }
+            LOG.log(Level.ERROR, "session 發生錯誤: " + infoHash.hex(), error);
             setState(SessionState.ERROR);
         }
         for (SessionListener listener : listeners) {
@@ -430,6 +503,34 @@ final class DefaultTorrentSession implements TorrentSession {
         }
     }
 
+    /** 由 BtClient 的連入 listener 呼叫：接手一條已握手的連入 socket。 */
+    void acceptIncoming(Socket socket, Handshake theirHandshake) {
+        if ((state != SessionState.DOWNLOADING && state != SessionState.SEEDING) || storage == null) {
+            closeQuietly(socket);
+            return;
+        }
+        if (workers.size() >= maxPeers) {
+            closeQuietly(socket);
+            return;
+        }
+        InetSocketAddress remote = (InetSocketAddress) socket.getRemoteSocketAddress();
+        PeerAddress address = new PeerAddress(remote);
+        PeerWorker worker = new PeerWorker(socket, theirHandshake);
+        if (workers.putIfAbsent(address, worker) == null) {
+            LOG.log(Level.DEBUG, () -> "接受連入 peer: " + address);
+            worker.connection.start();
+        } else {
+            closeQuietly(socket);
+        }
+    }
+
+    private static void closeQuietly(Socket socket) {
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+        }
+    }
+
     /** 單一 peer 連線邏輯。downloadMode 在建立時固定（metadata 階段的連線於轉換時收掉重連）。 */
     private final class PeerWorker implements PeerConnection.Listener {
 
@@ -445,6 +546,13 @@ final class DefaultTorrentSession implements TorrentSession {
                     address, infoHash, peerId, downloadMode ? meta.pieceCount() : 0, dht != null, this);
         }
 
+        /** 連入連線（一定已知 metadata）。 */
+        PeerWorker(Socket socket, Handshake theirHandshake) {
+            this.downloadMode = true;
+            this.connection = PeerConnection.incoming(
+                    socket, theirHandshake, infoHash, peerId, metainfo.pieceCount(), dht != null, this);
+        }
+
         @Override
         public void onHandshakeCompleted(PeerConnection conn, Handshake theirs) {
             if (theirs.supportsExtensionProtocol()) {
@@ -458,7 +566,9 @@ final class DefaultTorrentSession implements TorrentSession {
                 if (have.cardinality() > 0) {
                     conn.send(new PeerMessage.BitfieldMessage(have));
                 }
-                conn.send(new PeerMessage.Interested());
+                if (picker != null && !picker.isComplete()) {
+                    conn.send(new PeerMessage.Interested()); // 只有還缺 piece 時才表示興趣
+                }
             }
         }
 
@@ -470,8 +580,7 @@ final class DefaultTorrentSession implements TorrentSession {
             }
             if (message instanceof PeerMessage.Port(int dhtPort)) {
                 if (dht != null && dhtPort > 0) {
-                    dht.addNode(new java.net.InetSocketAddress(
-                            conn.address().socketAddress().getHostString(), dhtPort));
+                    dht.addNode(new InetSocketAddress(conn.address().socketAddress().getHostString(), dhtPort));
                 }
                 return;
             }
@@ -484,6 +593,13 @@ final class DefaultTorrentSession implements TorrentSession {
                 case PeerMessage.BitfieldMessage(Bitfield bf) -> picker.onPeerBitfield(bf);
                 case PeerMessage.Have(int piece) -> picker.onPeerHave(piece);
                 case PeerMessage.Piece(int piece, int begin, byte[] data) -> onBlock(piece, begin, data);
+                // ---- 上傳路徑 ----
+                case PeerMessage.Interested() -> {
+                    if (canUpload()) {
+                        conn.send(new PeerMessage.Unchoke());
+                    }
+                }
+                case PeerMessage.Request(int piece, int begin, int length) -> serveBlock(conn, piece, begin, length);
                 default -> {
                 }
             }
@@ -492,7 +608,7 @@ final class DefaultTorrentSession implements TorrentSession {
         @Override
         public void onClosed(PeerConnection conn, IOException error) {
             workers.remove(conn.address());
-            if (downloadMode) {
+            if (downloadMode && picker != null) {
                 abandonOutstanding();
                 picker.onPeerGone(conn.peerBitfield());
             }
@@ -538,7 +654,7 @@ final class DefaultTorrentSession implements TorrentSession {
             }
             picker.onPieceVerified(pieceIndex, valid);
             if (!valid) {
-                return; // 該 piece 重新排入；壞 peer 黑名單於 M9
+                return; // 該 piece 重新排入；壞 peer 黑名單於後續里程碑
             }
             verifiedWantedBytes.addAndGet(selection.wantedBytesInPiece(pieceIndex));
             broadcastHave(pieceIndex);
@@ -547,6 +663,36 @@ final class DefaultTorrentSession implements TorrentSession {
                 onDownloadComplete();
             }
         }
+
+        /** 回應對方的 block 請求（上傳）。 */
+        private void serveBlock(PeerConnection conn, int pieceIndex, int begin, int length) {
+            if (!canUpload() || conn.amChoking()) {
+                return;
+            }
+            if (length <= 0 || length > MAX_UPLOAD_BLOCK || begin < 0) {
+                LOG.log(Level.WARNING, () -> "拒絕異常的 block 請求 from " + conn.address()
+                        + " piece=" + pieceIndex + " begin=" + begin + " length=" + length);
+                return;
+            }
+            if (pieceIndex < 0 || pieceIndex >= metainfo.pieceCount() || !storage.completedPieces().get(pieceIndex)) {
+                return; // 我方尚無此 piece
+            }
+            byte[] data;
+            try {
+                data = storage.read(pieceIndex, begin, length);
+            } catch (IOException | RuntimeException e) {
+                LOG.log(Level.WARNING, "讀取 piece " + pieceIndex + " 供上傳失敗", e);
+                return;
+            }
+            conn.send(new PeerMessage.Piece(pieceIndex, begin, data));
+            uploadedBytes.addAndGet(length);
+            LOG.log(Level.TRACE, () -> "上傳 block piece=" + pieceIndex + " begin=" + begin + " → " + conn.address());
+        }
+    }
+
+    /** 可上傳條件：有 storage、狀態為下載中或做種（STOPPED 時停止上傳）。 */
+    private boolean canUpload() {
+        return storage != null && (state == SessionState.DOWNLOADING || state == SessionState.SEEDING);
     }
 
     private void broadcastHave(int pieceIndex) {
@@ -574,6 +720,7 @@ final class DefaultTorrentSession implements TorrentSession {
                 allDone = completed.get(p);
             }
             if (allDone && completedFileEvents.add(file.index())) {
+                LOG.log(Level.DEBUG, () -> "檔案完成: " + file.displayPath());
                 for (SessionListener listener : listeners) {
                     listener.onFileCompleted(this, file);
                 }
@@ -586,7 +733,13 @@ final class DefaultTorrentSession implements TorrentSession {
             if (state != SessionState.DOWNLOADING) {
                 return;
             }
+            LOG.log(Level.DEBUG, () -> "下載完成，進入做種: " + metainfo.name());
             setState(SessionState.SEEDING);
+        }
+        Thread c = connectorThread;
+        connectorThread = null;
+        if (c != null) {
+            c.interrupt(); // 做種不再主動連出
         }
         TrackerManager tm = trackerManager;
         if (tm != null) {

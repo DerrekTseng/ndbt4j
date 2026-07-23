@@ -20,6 +20,8 @@ import net.derrek.bt4j.peer.PeerConnection;
  */
 public final class MetadataExchange implements Extension {
 
+    private static final System.Logger LOG = System.getLogger(MetadataExchange.class.getName());
+
     public static final int PIECE_SIZE = 16 * 1024;
 
     /** metadata 大小上限（正常 info 字典遠小於此；防惡意 metadata_size）。 */
@@ -168,11 +170,13 @@ public final class MetadataExchange implements Extension {
             if (InfoHash.ofInfoDict(buffer).equals(expected)) {
                 completed = buffer;
             } else {
+                LOG.log(System.Logger.Level.WARNING, () -> "metadata SHA-1 與 info-hash 不符（偽造/損毀），丟棄重來: " + expected.hex());
                 buffer = null; // 偽造或損毀：整個重來（之後的 extension handshake 會重新初始化）
                 received = null;
             }
         }
         if (completed != null) {
+            LOG.log(System.Logger.Level.DEBUG, () -> "metadata 取得完成並通過驗證: " + expected.hex());
             supplied = completed;
             future.complete(completed.clone());
         }

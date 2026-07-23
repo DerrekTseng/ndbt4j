@@ -82,23 +82,27 @@
 - [x] 驗收（真實世界）：使用者的無 tracker 磁力連結（第 2 組）經公共 DHT 5.5 秒取得 metadata（72MB 單檔，名稱完整解出）
 - [ ]（延後 M8）路由表隨 resume 持久化，重啟用既有節點暖機
 
-## M8 — 做種 / 關閉上傳 / resume
+## M8 — 做種 / 關閉上傳 / resume ✅
 
-- [ ] 回應他人 request（上傳路徑）、完成後 SEEDING 狀態
-- [ ] `stopSeeding`：tracker stopped、停收連入、斷線
-- [ ] `ResumeData` save/load（bencoding 格式）、`BtClient.restore`、`Storage.recheck`
-- [ ] 驗收：重啟程序後續傳，不重下已完成 piece
+- [x] 連入連線 listener（BtClient 的 ServerSocket、依 info-hash 路由至 session；原訂 M9，提前以支撐真正做種）
+- [x] `PeerConnection.incoming`（接手已握手 socket、回送我方 handshake）
+- [x] 上傳路徑：Interested→Unchoke、Request→Piece（block 上限防護）、uploaded 統計；下載中也對 peer 互惠
+- [x] 完成後 SEEDING（停止主動連出、tracker completed）；`stopSeeding` = STOPPED（tracker stopped、關連線、停止上傳）
+- [x] `ResumeData` 自足化（內嵌 .torrent bytes）+ bencode save/load + `BtClient.restore`（跳過已完成 piece）
+- [x] 全面 logging：`System.Logger`（零依賴，只用 WARNING/ERROR/DEBUG/TRACE，無 INFO；引用方可橋接 slf4j）
+- [x] 驗收：兩個 bt4j client 一做種一下載（走真實 wire）、部分完成 resume 續傳只索取缺少 piece、stopped resume 保持 STOPPED
 
 ## M9 — 擴充功能
 
 - [ ] `PeerExchange`（BEP 11，≥60s 週期）
 - [ ] Fast Extension 訊息處理（BEP 6）
-- [ ] private torrent（BEP 27）：停用 DHT/PEX
-- [ ] 連入連線 listener（`PeerConnection.incoming` 接線到對應 session）
+- [ ] private torrent（BEP 27）：停用 DHT/PEX（DHT 部分已於 M7 完成）
+- [ ] 壞 peer 黑名單（連續送壞 piece）
+- [ ] 全域限速（見待決）
 
 ## 待決（實作前要拍板）
 
-- [ ] 測試框架選擇（見「前置」）
-- [ ] 全域限速要不要進初版
+- [ ] 全域限速（上傳/下載頻寬）要不要進初版
 - [x] block 暫存策略：已決定「未驗證前放記憶體，驗證通過才落地」（上限 = MAX_ACTIVE_PIECES 32 × pieceLength；邊界丟棄自然成立）
-- [ ] logging：`System.Logger`（JDK 內建，零依賴）？
+- [x] logging：採 `System.Logger`（JDK 內建、零依賴）。等級只用 WARNING/ERROR/DEBUG/TRACE。引用方加 `slf4j-jdk-platform-logging` 即可導向 slf4j/logback，bt4j 本身維持零依賴
+- [x] 路由表隨 resume 持久化：暫緩（DHT bootstrap 已足夠可用；未來可加）

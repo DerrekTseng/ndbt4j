@@ -38,6 +38,8 @@ import net.derrek.bt4j.peer.PeerAddress;
  */
 public final class DhtClient implements AutoCloseable {
 
+    private static final System.Logger LOG = System.getLogger(DhtClient.class.getName());
+
     /**
      * 預設 bootstrap 節點（僅冷啟動時使用；路由表應隨 resume 資料持久化，
      * 重啟後以既有節點暖機，降低對公共節點的依賴）。
@@ -115,6 +117,7 @@ public final class DhtClient implements AutoCloseable {
             // 離線環境：表維持空，之後的 lookup 仍會嘗試 bootstrap 位址
         } finally {
             bootstrapped.countDown();
+            LOG.log(System.Logger.Level.DEBUG, () -> "DHT bootstrap 完成，路由表 " + table.size() + " 個節點");
         }
     }
 
@@ -235,6 +238,8 @@ public final class DhtClient implements AutoCloseable {
         if (announceTcpPort != null) {
             announceToClosest(target, targetId, announceTcpPort, responded, tokens);
         }
+        LOG.log(System.Logger.Level.DEBUG, () -> "DHT lookup " + target.hex() + " 找到 " + peers.size() + " 個 peer"
+                + (announceTcpPort != null ? "（並 announce port=" + announceTcpPort + "）" : ""));
         return List.copyOf(peers);
     }
 
