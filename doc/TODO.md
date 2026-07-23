@@ -36,23 +36,24 @@
 - [x] `Tracker.of`（scheme 分派；udp 留給 M5）
 - [x] 整合測試：對公開 tracker（opentrackr.org）announce 成功（`mvn test -Dbt4j.integration=true` 執行，預設跳過）
 
-## M3 — peer wire：端到端下載單檔 torrent
+## M3 — peer wire：端到端下載單檔 torrent ✅
 
-- [ ] `Handshake` encode/decode、reserved bits
-- [ ] `PeerMessage` 編解碼（framing：length-prefix）
-- [ ] `PeerConnection`：讀/寫 virtual thread、狀態旗標、keep-alive
-- [ ] `Bitfield`
-- [ ] `RarestFirstPicker`：pick/onBlockReceived/endgame
-- [ ] `FileStorage`（先做全選情境）+ `verifyPiece`
-- [ ] session 組裝：choke 處理、pipeline 請求、piece 完成 → Have 廣播
-- [ ] 驗收：實際下載一個小型合法 torrent（例如 Linux ISO）且 hash 全過
+- [x] `Handshake` encode/decode、reserved bits（DHT/擴充/Fast）
+- [x] `PeerMessage` 編解碼（length-prefix framing、未知 id 寬容略過、長度上限防護、含 Fast Extension 訊息）
+- [x] `PeerConnection`：讀/寫 virtual thread、四態旗標、110 秒 keep-alive、peerBitfield 追蹤
+- [x] `Bitfield`（MSB-first、padding 驗證）
+- [x] `RarestFirstPicker`：rarest-first、進行中 piece 上限 32、endgame 重複派發、驗證失敗重排
+- [x] `FileStorage`：記憶體 piece 緩衝 → 驗證通過才落地（含選擇性下載的邊界丟棄）、recheck
+- [x] session 組裝：`DefaultTorrentSession`（announce 迴圈、connector、pipeline 16、Have 廣播、狀態機、事件）+ `BtClient`
+- [x] 驗收：端到端測試（本地假 tracker + 測試 seeder，7 pieces 下載完成、位元組一致）
+- [ ] （延後）對真實公網 torrent 的下載驗證——建議 M5 UDP tracker 完成後用 doc/TEST-MAGNETS.md 或 Linux 發行版 torrent 實測
 
-## M4 — 檔案選擇
+## M4 — 檔案選擇（M3 已完成大半）
 
-- [ ] `PieceSelection.of`：檔案 → piece 需求集合（邊界 piece）
-- [ ] `FileStorage`：未勾選檔案不落地、邊界 piece 記憶體驗證
+- [x] `PieceSelection.of`：檔案 → piece 需求集合（邊界 piece、wantedBytesInPiece）
+- [x] `FileStorage`：未勾選檔案不落地、邊界 piece 記憶體驗證（測試：只勾中間檔案，磁碟只出現該檔且內容正確）
 - [ ] `TorrentSession.start` 重複呼叫 = 變更計畫
-- [ ] 驗收：多檔 torrent 只勾選部分檔案，磁碟上只出現勾選的檔案
+- [ ] 驗收：端到端測試以 DownloadPlan 勾選部分檔案
 
 ## M5 — UDP tracker + 多 tracker
 
@@ -93,5 +94,5 @@
 
 - [ ] 測試框架選擇（見「前置」）
 - [ ] 全域限速要不要進初版
-- [ ] block 暫存策略：piece 未驗證前放記憶體 or 直接寫檔（影響 FileStorage 設計）
+- [x] block 暫存策略：已決定「未驗證前放記憶體，驗證通過才落地」（上限 = MAX_ACTIVE_PIECES 32 × pieceLength；邊界丟棄自然成立）
 - [ ] logging：`System.Logger`（JDK 內建，零依賴）？

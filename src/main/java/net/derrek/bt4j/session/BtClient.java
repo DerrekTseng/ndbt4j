@@ -1,9 +1,15 @@
 package net.derrek.bt4j.session;
 
+import java.net.InetSocketAddress;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import net.derrek.bt4j.dht.DhtClient;
 import net.derrek.bt4j.metainfo.InfoHash;
 import net.derrek.bt4j.metainfo.Metainfo;
+import net.derrek.bt4j.peer.PeerId;
 import net.derrek.bt4j.storage.ResumeData;
 
 /**
@@ -21,73 +27,106 @@ import net.derrek.bt4j.storage.ResumeData;
  */
 public final class BtClient implements AutoCloseable {
 
-    private BtClient() {
+    private final PeerId peerId = PeerId.generate();
+    private final int listenPort;
+    private final int maxPeersPerTorrent;
+    private final Map<InfoHash, TorrentSession> sessions = new ConcurrentHashMap<>();
+
+    private BtClient(Builder builder) {
+        this.listenPort = builder.listenPort;
+        this.maxPeersPerTorrent = builder.maxPeersPerTorrent;
     }
 
     public static Builder builder() {
-        throw new UnsupportedOperationException("尚未實作");
+        return new Builder();
     }
 
-    /** 加入磁力連結，立即回傳（背景開始取 metadata，狀態 FETCHING_METADATA）。 */
+    /** 加入磁力連結，立即回傳（背景開始取 metadata，狀態 FETCHING_METADATA）。M6 實作。 */
     public TorrentSession addMagnet(String magnetLink) {
-        throw new UnsupportedOperationException("尚未實作");
+        throw new UnsupportedOperationException("尚未實作（M6：需要 BEP 9/10 + DHT）");
     }
 
     /** 加入 .torrent 檔（狀態直接 METADATA_READY）。 */
     public TorrentSession addTorrent(Path torrentFile) {
-        throw new UnsupportedOperationException("尚未實作");
+        return addTorrent(Metainfo.parse(torrentFile));
     }
 
     public TorrentSession addTorrent(Metainfo metainfo) {
-        throw new UnsupportedOperationException("尚未實作");
+        return sessions.computeIfAbsent(metainfo.infoHash(),
+                hash -> new DefaultTorrentSession(metainfo, peerId, listenPort, maxPeersPerTorrent));
     }
 
-    /** 伺服器重啟後由 resume 資料恢復 session（不重新下載已完成 piece）。 */
+    /** 伺服器重啟後由 resume 資料恢復 session（不重新下載已完成 piece）。M8 實作。 */
     public TorrentSession restore(ResumeData resumeData) {
-        throw new UnsupportedOperationException("尚未實作");
+        throw new UnsupportedOperationException("尚未實作（M8）");
     }
 
     public List<TorrentSession> sessions() {
-        throw new UnsupportedOperationException("尚未實作");
+        return List.copyOf(sessions.values());
     }
 
-    public java.util.Optional<TorrentSession> session(InfoHash infoHash) {
-        throw new UnsupportedOperationException("尚未實作");
+    public Optional<TorrentSession> session(InfoHash infoHash) {
+        return Optional.ofNullable(sessions.get(infoHash));
+    }
+
+    public PeerId peerId() {
+        return peerId;
     }
 
     /** 關閉所有 session、DHT 與 listen socket。 */
     @Override
     public void close() {
-        throw new UnsupportedOperationException("尚未實作");
+        for (TorrentSession session : sessions.values()) {
+            session.close();
+        }
+        sessions.clear();
     }
 
     public static final class Builder {
 
-        /** peer wire 的 TCP listen port，同時作為 DHT UDP port。預設 6881。 */
-        public Builder listenPort(int port) {
-            throw new UnsupportedOperationException("尚未實作");
+        private int listenPort = 6881;
+        private boolean dhtEnabled = true;
+        private int maxPeersPerTorrent = 30;
+        private List<InetSocketAddress> dhtBootstrapNodes = DhtClient.DEFAULT_BOOTSTRAP_NODES;
+
+        private Builder() {
         }
 
-        /** 停用 DHT（預設啟用）。private torrent 無論此設定皆不用 DHT。 */
+        /** peer wire 的 TCP listen port，同時作為 DHT UDP port。預設 6881。 */
+        public Builder listenPort(int port) {
+            if (port < 1 || port > 65535) {
+                throw new IllegalArgumentException("port 超出範圍: " + port);
+            }
+            this.listenPort = port;
+            return this;
+        }
+
+        /** 停用 DHT（預設啟用）。private torrent 無論此設定皆不用 DHT。（M7 生效） */
         public Builder dhtEnabled(boolean enabled) {
-            throw new UnsupportedOperationException("尚未實作");
+            this.dhtEnabled = enabled;
+            return this;
         }
 
         /**
-         * 覆寫 DHT bootstrap 節點（預設 {@link net.derrek.bt4j.dht.DhtClient#DEFAULT_BOOTSTRAP_NODES}）。
-         * 僅冷啟動時使用；有 resume 的路由表時優先用既有節點。
+         * 覆寫 DHT bootstrap 節點（預設 {@link DhtClient#DEFAULT_BOOTSTRAP_NODES}）。
+         * 僅冷啟動時使用；有 resume 的路由表時優先用既有節點。（M7 生效）
          */
-        public Builder dhtBootstrapNodes(java.util.List<java.net.InetSocketAddress> nodes) {
-            throw new UnsupportedOperationException("尚未實作");
+        public Builder dhtBootstrapNodes(List<InetSocketAddress> nodes) {
+            this.dhtBootstrapNodes = List.copyOf(nodes);
+            return this;
         }
 
-        /** 每個 torrent 的最大 peer 連線數，預設 50。 */
+        /** 每個 torrent 的最大 peer 連線數，預設 30。 */
         public Builder maxPeersPerTorrent(int max) {
-            throw new UnsupportedOperationException("尚未實作");
+            if (max < 1) {
+                throw new IllegalArgumentException("maxPeersPerTorrent 必須為正: " + max);
+            }
+            this.maxPeersPerTorrent = max;
+            return this;
         }
 
         public BtClient build() {
-            throw new UnsupportedOperationException("尚未實作");
+            return new BtClient(this);
         }
     }
 }

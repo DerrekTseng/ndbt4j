@@ -1,37 +1,75 @@
 package net.derrek.bt4j.peer;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import net.derrek.bt4j.metainfo.InfoHash;
 
 /**
  * peer wire handshake（BEP 3）：
- * &lt;19&gt;&lt;"BitTorrent protocol"&gt;&lt;reserved 8 bytes&gt;&lt;info-hash 20&gt;&lt;peer-id 20&gt;。
- * reserved bits：bit 20（第 6 byte 的 0x10）= 支援擴充協定（BEP 10）、
- * 最後一 byte 的 0x04 = Fast Extension（BEP 6）、0x01 = DHT（BEP 5 port 訊息）。
+ * &lt;19&gt;&lt;"BitTorrent protocol"&gt;&lt;reserved 8 bytes&gt;&lt;info-hash 20&gt;&lt;peer-id 20&gt;，共 68 bytes。
+ * reserved bits：reserved[5] 的 0x10 = 擴充協定（BEP 10）、
+ * reserved[7] 的 0x04 = Fast Extension（BEP 6）、reserved[7] 的 0x01 = DHT（BEP 5 port 訊息）。
  */
 public record Handshake(byte[] reserved, InfoHash infoHash, PeerId peerId) {
 
+    public static final int LENGTH = 68;
+
+    private static final byte[] PROTOCOL = "BitTorrent protocol".getBytes(StandardCharsets.US_ASCII);
+
+    public Handshake {
+        if (reserved.length != 8) {
+            throw new IllegalArgumentException("reserved 必須是 8 bytes");
+        }
+    }
+
     /** 本套件送出的 handshake（依已啟用功能設定 reserved bits）。 */
     public static Handshake outgoing(InfoHash infoHash, PeerId peerId, boolean dht, boolean extensions, boolean fast) {
-        throw new UnsupportedOperationException("尚未實作");
+        byte[] reserved = new byte[8];
+        if (extensions) {
+            reserved[5] |= 0x10;
+        }
+        if (fast) {
+            reserved[7] |= 0x04;
+        }
+        if (dht) {
+            reserved[7] |= 0x01;
+        }
+        return new Handshake(reserved, infoHash, peerId);
     }
 
     public boolean supportsExtensionProtocol() {
-        throw new UnsupportedOperationException("尚未實作");
+        return (reserved[5] & 0x10) != 0;
     }
 
     public boolean supportsDht() {
-        throw new UnsupportedOperationException("尚未實作");
+        return (reserved[7] & 0x01) != 0;
     }
 
     public boolean supportsFastExtension() {
-        throw new UnsupportedOperationException("尚未實作");
+        return (reserved[7] & 0x04) != 0;
     }
 
     public byte[] encode() {
-        throw new UnsupportedOperationException("尚未實作");
+        byte[] out = new byte[LENGTH];
+        out[0] = (byte) PROTOCOL.length;
+        System.arraycopy(PROTOCOL, 0, out, 1, PROTOCOL.length);
+        System.arraycopy(reserved, 0, out, 20, 8);
+        System.arraycopy(infoHash.bytes(), 0, out, 28, 20);
+        System.arraycopy(peerId.bytes(), 0, out, 48, 20);
+        return out;
     }
 
     public static Handshake decode(byte[] data) {
-        throw new UnsupportedOperationException("尚未實作");
+        if (data.length != LENGTH) {
+            throw new IllegalArgumentException("handshake 必須是 " + LENGTH + " bytes，收到 " + data.length);
+        }
+        if (data[0] != PROTOCOL.length
+                || !Arrays.equals(data, 1, 20, PROTOCOL, 0, PROTOCOL.length)) {
+            throw new IllegalArgumentException("不是 BitTorrent protocol handshake");
+        }
+        return new Handshake(
+                Arrays.copyOfRange(data, 20, 28),
+                new InfoHash(Arrays.copyOfRange(data, 28, 48)),
+                new PeerId(Arrays.copyOfRange(data, 48, 68)));
     }
 }
