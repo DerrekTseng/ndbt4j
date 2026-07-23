@@ -25,6 +25,13 @@ public final class RarestFirstPicker implements PiecePicker {
     private final BitSet verified;
     private final Map<Integer, PieceProgress> active = new HashMap<>();
 
+    /**
+     * Lock-free snapshot of the endgame state, refreshed inside {@link #pick} (where the authoritative check
+     * already runs) so hot callers can gate per-block work without taking the picker lock or scanning pieces.
+     * May lag the true state slightly; a stale read only adds or skips a harmless duplicate-cancel scan.
+     */
+    private volatile boolean endgame;
+
     /** Block state of a piece in progress. */
     private static final class PieceProgress {
         final int blockCount;
@@ -85,6 +92,7 @@ public final class RarestFirstPicker implements PiecePicker {
         for (Map.Entry<Integer, PieceProgress> entry : active.entrySet()) {
             fillFrom(entry.getKey(), entry.getValue(), peerHas, out, maxBlocks);
             if (out.size() >= maxBlocks) {
+                endgame = false; // returned fresh, never-before-requested blocks
                 return out;
             }
         }
@@ -103,11 +111,19 @@ public final class RarestFirstPicker implements PiecePicker {
             }
             PieceProgress progress = new PieceProgress(blockCount(best));
             active.put(best, progress);
+            endgame = false; // a fresh piece was opened: there are still undispatched blocks
             fillFrom(best, progress, peerHas, out, maxBlocks);
         }
 
+        // Fresh, never-before-requested blocks were dispatched: by definition not endgame.
+        if (!out.isEmpty()) {
+            endgame = false;
+            return out;
+        }
+
         // 3) endgame: once all remaining blocks have been dispatched, re-request blocks not yet delivered (across peers to speed up the tail)
-        if (out.isEmpty() && isEndgameLocked()) {
+        endgame = isEndgameLocked();
+        if (endgame) {
             for (Map.Entry<Integer, PieceProgress> entry : active.entrySet()) {
                 int p = entry.getKey();
                 PieceProgress progress = entry.getValue();
@@ -189,8 +205,9 @@ public final class RarestFirstPicker implements PiecePicker {
         active.remove(pieceIndex);
         if (valid) {
             verified.set(pieceIndex);
+        } else {
+            endgame = false; // the piece returns to the not-started state, so blocks must be re-dispatched
         }
-        // verification failed: return to the not-started state, to be re-queued later
     }
 
     @Override
@@ -209,6 +226,14 @@ public final class RarestFirstPicker implements PiecePicker {
     @Override
     public synchronized boolean isEndgame() {
         return isEndgameLocked();
+    }
+
+    /**
+     * Lock-free, best-effort endgame status refreshed on the last {@link #pick}. Cheap enough to gate per-block
+     * work (e.g. duplicate-request cancellation); may briefly lag {@link #isEndgame()} but never misleads harmfully.
+     */
+    public boolean isEndgameFast() {
+        return endgame;
     }
 
     private boolean isEndgameLocked() {

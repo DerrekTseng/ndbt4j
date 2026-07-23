@@ -822,6 +822,22 @@ final class DefaultTorrentSession implements TorrentSession {
         }
     }
 
+    /**
+     * Endgame: a block just arrived from {@code source}; cancel the same outstanding request on every other peer
+     * so they stop uploading a now-redundant copy. Best-effort — a block already in flight still arrives and is
+     * dropped as a duplicate.
+     */
+    private void cancelBlockElsewhere(BlockRequest block, PeerWorker source) {
+        for (PeerWorker worker : workers.values()) {
+            if (worker == source) {
+                continue;
+            }
+            if (worker.outstanding.remove(block) != null) {
+                worker.connection.send(new PeerMessage.Cancel(block.pieceIndex(), block.begin(), block.length()));
+            }
+        }
+    }
+
     /** The logic for a single peer connection. downloadMode is fixed at creation (metadata-stage connections are torn down and reconnected on transition). */
     private final class PeerWorker implements PeerConnection.Listener {
 
@@ -929,6 +945,10 @@ final class DefaultTorrentSession implements TorrentSession {
                 case PeerMessage.Interested() -> runChokeRound(false);      // immediate re-evaluation on interest change
                 case PeerMessage.NotInterested() -> runChokeRound(false);   // free up a slot for other peers
                 case PeerMessage.Request(int piece, int begin, int length) -> serveBlock(conn, piece, begin, length);
+                case PeerMessage.Cancel(int piece, int begin, int length) -> {
+                    // No-op: requests are served synchronously (read + enqueued on arrival), so by the time a
+                    // Cancel is processed the block is already queued or sent — there is nothing left to drop.
+                }
                 default -> {
                     // HaveNone (peerBitfield already cleared), SuggestPiece, etc.: ignore
                 }
@@ -1016,7 +1036,8 @@ final class DefaultTorrentSession implements TorrentSession {
         }
 
         private void onBlock(int pieceIndex, int begin, byte[] data) {
-            outstanding.remove(new BlockRequest(pieceIndex, begin, data.length));
+            BlockRequest block = new BlockRequest(pieceIndex, begin, data.length);
+            outstanding.remove(block);
             downloadLimiter.acquire(data.length); // download throttling: stalls the read loop → TCP backpressure
             downloadedBytes.addAndGet(data.length);
             bytesFromPeer.addAndGet(data.length); // choke algorithm: tit-for-tat ranking key
@@ -1036,8 +1057,13 @@ final class DefaultTorrentSession implements TorrentSession {
             pieceContributors.computeIfAbsent(pieceIndex, k -> ConcurrentHashMap.newKeySet())
                     .add(connection.address());
             storage.write(pieceIndex, begin, data);
-            picker.onBlockReceived(new BlockRequest(pieceIndex, begin, data.length))
-                    .ifPresent(this::completePiece);
+            Optional<Integer> completed = picker.onBlockReceived(block);
+            // Endgame duplicate suppression: the same block is deliberately requested from several peers, so once
+            // it arrives, tell the others to stop sending it — saving their upload and our (wasted) download.
+            if (picker.isEndgameFast()) {
+                cancelBlockElsewhere(block, this);
+            }
+            completed.ifPresent(this::completePiece);
             fillPipeline();
         }
 
