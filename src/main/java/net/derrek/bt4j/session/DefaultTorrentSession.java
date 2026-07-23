@@ -56,8 +56,11 @@ final class DefaultTorrentSession implements TorrentSession {
 
     private static final Logger LOG = System.getLogger(DefaultTorrentSession.class.getName());
 
-    /** Number of requests in flight per connection (pipeline depth). */
-    private static final int PIPELINE_DEPTH = 16;
+    /** Adaptive pipeline depth: floor (also the depth before we have a rate sample) and ceiling. */
+    private static final int MIN_PIPELINE = 16;
+    private static final int MAX_PIPELINE = 256;
+    /** Target seconds of data kept in flight per peer; the pipeline depth scales to the peer's recent rate. */
+    private static final int PIPELINE_TARGET_SECONDS = 3;
     /** Maximum length of a single uploaded block (guards against malicious Requests for oversized blocks). */
     private static final int MAX_UPLOAD_BLOCK = 128 * 1024;
     /** Number of upload slots: peers unchoked at once (including 1 optimistic slot). */
@@ -66,6 +69,8 @@ final class DefaultTorrentSession implements TorrentSession {
     private static final long CHOKE_INTERVAL_MILLIS = 10_000;
     /** How many choke rounds between each optimistic-unchoke rotation (10s × 3 = 30s). */
     private static final int OPTIMISTIC_EVERY_ROUNDS = 3;
+    /** Anti-snubbing: a peer with outstanding requests that sends no block for this long is considered to be snubbing us. */
+    private static final long SNUB_TIMEOUT_NANOS = 60_000_000_000L;
 
     private final InfoHash infoHash;
     private final PeerId peerId;
@@ -113,6 +118,9 @@ final class DefaultTorrentSession implements TorrentSession {
     private final Object chokeLock = new Object();
     private volatile PeerWorker optimisticPeer;
     private int chokeRoundCounter;
+    // Timing (instance fields so tests can shorten them); default to the constants above.
+    private volatile long chokeIntervalMillis = CHOKE_INTERVAL_MILLIS;
+    private volatile long snubTimeoutNanos = SNUB_TIMEOUT_NANOS;
 
     // Rate calculation: re-sample the delta only every ≥0.5 seconds, so that multiple getters in the same round
     // calling stats() don't each reset the baseline within a few-microsecond window and compute 0 or noisy rates.
@@ -340,11 +348,45 @@ final class DefaultTorrentSession implements TorrentSession {
     private void chokeLoop() {
         while (isActive()) {
             try {
-                Thread.sleep(CHOKE_INTERVAL_MILLIS);
+                Thread.sleep(chokeIntervalMillis);
             } catch (InterruptedException e) {
                 return;
             }
             runChokeRound(true);
+            if (state == SessionState.DOWNLOADING) {
+                List<PeerWorker> snubbed = checkSnubbing();
+                topUpPipelines(snubbed);
+            }
+        }
+    }
+
+    /**
+     * Anti-snubbing: a peer that accepted our requests but has sent no block for {@value #SNUB_TIMEOUT_NANOS}ns
+     * is "snubbing" us. Abandon its outstanding requests so the picker re-hands those blocks to responsive peers,
+     * instead of waiting out the full read timeout. Returns the snubbed workers.
+     */
+    private List<PeerWorker> checkSnubbing() {
+        long now = System.nanoTime();
+        List<PeerWorker> snubbed = new ArrayList<>();
+        for (PeerWorker worker : workers.values()) {
+            if (worker.downloadMode && !worker.outstanding.isEmpty()
+                    && now - worker.lastBlockNanos > snubTimeoutNanos) {
+                snubbed.add(worker);
+            }
+        }
+        for (PeerWorker worker : snubbed) {
+            LOG.log(Level.DEBUG, () -> "peer " + worker.connection.address() + " snubbed us; re-distributing its blocks");
+            worker.abandonOutstanding();
+        }
+        return snubbed;
+    }
+
+    /** Keep pipelines full: request from every unchoked download peer with spare capacity (skips the just-snubbed ones this round). */
+    private void topUpPipelines(List<PeerWorker> skip) {
+        for (PeerWorker worker : workers.values()) {
+            if (worker.downloadMode && !skip.contains(worker)) {
+                worker.fillPipeline();
+            }
         }
     }
 
@@ -778,7 +820,15 @@ final class DefaultTorrentSession implements TorrentSession {
         final AtomicLong bytesFromPeer = new AtomicLong(); // bytes downloaded from this peer (leech ranking key)
         final AtomicLong bytesToPeer = new AtomicLong();   // bytes uploaded to this peer (seed ranking key)
         volatile long lastRoundBytes;                       // the baseline from the previous choke round
-        volatile long recentRate;                           // this round's delta (for ranking)
+        volatile long recentRate;                           // this round's delta (for ranking / pipeline depth)
+        volatile long lastBlockNanos = System.nanoTime();   // last time a block arrived (anti-snubbing)
+
+        /** Adaptive pipeline depth for this peer, scaled to its recent download rate (bounded). */
+        private int desiredPipeline() {
+            long ratePerSec = recentRate / Math.max(1, chokeIntervalMillis / 1000);
+            long blocks = ratePerSec * PIPELINE_TARGET_SECONDS / BlockRequest.BLOCK_SIZE;
+            return (int) Math.max(MIN_PIPELINE, Math.min(MAX_PIPELINE, blocks));
+        }
 
         PeerWorker(PeerAddress address) {
             Metainfo meta = metainfo;
@@ -882,7 +932,7 @@ final class DefaultTorrentSession implements TorrentSession {
             if (connection.peerChoking() || state != SessionState.DOWNLOADING) {
                 return;
             }
-            int want = PIPELINE_DEPTH - outstanding.size();
+            int want = desiredPipeline() - outstanding.size();
             if (want <= 0) {
                 return;
             }
@@ -898,7 +948,7 @@ final class DefaultTorrentSession implements TorrentSession {
             if (state != SessionState.DOWNLOADING || !connection.peerBitfield().get(pieceIndex)) {
                 return;
             }
-            int want = PIPELINE_DEPTH - outstanding.size();
+            int want = desiredPipeline() - outstanding.size();
             if (want <= 0) {
                 return;
             }
@@ -928,6 +978,7 @@ final class DefaultTorrentSession implements TorrentSession {
             downloadLimiter.acquire(data.length); // download throttling: stalls the read loop → TCP backpressure
             downloadedBytes.addAndGet(data.length);
             bytesFromPeer.addAndGet(data.length); // choke algorithm: tit-for-tat ranking key
+            lastBlockNanos = System.nanoTime();   // anti-snubbing: this peer is delivering
             // Record which peers contributed to this piece, for accountability on verification failure
             pieceContributors.computeIfAbsent(pieceIndex, k -> ConcurrentHashMap.newKeySet())
                     .add(connection.address());
@@ -1008,6 +1059,12 @@ final class DefaultTorrentSession implements TorrentSession {
     /** For testing: the current number of banned peers. */
     int bannedPeerCount() {
         return bannedPeers.size();
+    }
+
+    /** For testing: shorten the choke-round interval and snub timeout so anti-snubbing can be exercised quickly. */
+    void setChokeTimingForTest(long chokeIntervalMillis, long snubTimeoutNanos) {
+        this.chokeIntervalMillis = chokeIntervalMillis;
+        this.snubTimeoutNanos = snubTimeoutNanos;
     }
 
     /** Records a verification failure against a peer; bans and disconnects it once the threshold is reached. */

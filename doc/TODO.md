@@ -119,6 +119,10 @@
 
 - [x] choke 演算法：標準 BitTorrent choke（`DefaultTorrentSession.runChokeRound`）——固定上傳槽 4（含 1 optimistic）、每 10s 重評、依「近期速率」tit-for-tat 排序（下載中依 bytesFromPeer、做種依 bytesToPeer）、每 30s 隨機輪換 optimistic unchoke、平手時 hysteresis 偏好已 unchoke 者避免 flapping；interest 變動/peer 斷線即時重評；uploadRateLimit(0) 時全 choke。測試 `ChokeAlgorithmTest`（10 leecher 同時只 unchoke ≤4）。
 - [x] 修 `stats()` 速率顯示 bug（每 getter 呼叫重設基準 → 改 0.5s 取樣快取）
+- [x] anti-snubbing：peer 接受 request 卻超過 60s 不給資料視為 snub，放棄其 outstanding 並重分配給有回應的 peer（不必等 150s read timeout）；每 choke round 檢查
+- [x] 自適應 pipeline 深度：outstanding 請求數依 peer 近期速率縮放（16~256，目標約 3 秒在途量），快 peer 更深、慢 peer 不囤積
+- [x] 全部程式碼註解 / Javadoc / log 訊息改英文（README、doc/README、CLAUDE.md 同步）
+- 註：super-seeding 未做——它是做種端散播效率機制，對下載速度無幫助
 
 ## 待決（實作前要拍板）
 
