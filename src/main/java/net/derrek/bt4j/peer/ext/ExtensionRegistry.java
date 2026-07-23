@@ -85,7 +85,7 @@ public final class ExtensionRegistry {
                 }
             }
         }
-        LOG.log(System.Logger.Level.TRACE, () -> "對方擴充 handshake: " + theirIds.keySet());
+        LOG.log(System.Logger.Level.TRACE, () -> "peer extension handshake: " + theirIds.keySet());
         for (Extension extension : byName.values()) {
             extension.onExtensionHandshake(connection, this, handshake);
         }

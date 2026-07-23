@@ -118,7 +118,7 @@ public final class PeerConnection implements AutoCloseable {
                 out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, false).encode());
                 out.flush();
                 theirs = incomingHandshake;
-                LOG.log(Level.DEBUG, () -> "連入連線建立: " + address);
+                LOG.log(Level.DEBUG, () -> "incoming connection established: " + address);
             } else {
                 Socket s = new Socket();
                 this.socket = s;
@@ -146,7 +146,7 @@ public final class PeerConnection implements AutoCloseable {
                 if (!theirs.infoHash().equals(infoHash)) {
                     throw new IOException("對方 info-hash 不符");
                 }
-                LOG.log(Level.DEBUG, () -> "連出連線握手完成: " + address);
+                LOG.log(Level.DEBUG, () -> "outgoing connection handshaked: " + address);
             }
             this.theirHandshake = theirs;
             this.writeThread = Thread.ofVirtual().name("bt4j-peer-write-" + address).start(() -> runWrite(out));
@@ -154,13 +154,13 @@ public final class PeerConnection implements AutoCloseable {
 
             while (!closed.get()) {
                 PeerMessage message = PeerMessage.read(in, pieceCount);
-                LOG.log(Level.TRACE, () -> "收到 " + address + " -> " + message.getClass().getSimpleName());
+                LOG.log(Level.TRACE, () -> "recv " + address + " -> " + message.getClass().getSimpleName());
                 handleInternal(message);
                 listener.onMessage(this, message);
             }
         } catch (IOException e) {
             if (!closed.get()) {
-                LOG.log(Level.DEBUG, () -> "連線 " + address + " 中斷: " + e.getMessage());
+                LOG.log(Level.DEBUG, () -> "connection " + address + " dropped: " + e.getMessage());
             }
             closeInternal(closed.get() ? null : e);
         }

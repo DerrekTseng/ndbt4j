@@ -64,8 +64,8 @@ public final class HttpTracker implements Tracker {
             throw new TrackerException("tracker 回應 HTTP " + response.statusCode() + ": " + uri);
         }
         AnnounceResponse result = parseResponse(response.body());
-        LOG.log(System.Logger.Level.DEBUG, () -> "HTTP tracker " + uri + " 回應 "
-                + result.peers().size() + " 個 peer（interval=" + result.interval().toSeconds() + "s）");
+        LOG.log(System.Logger.Level.DEBUG, () -> "HTTP tracker " + uri + " returned "
+                + result.peers().size() + " peers (interval=" + result.interval().toSeconds() + "s)");
         return result;
     }
 

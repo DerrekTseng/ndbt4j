@@ -121,11 +121,11 @@ public final class TrackerManager implements AutoCloseable {
                     }
                     return response.interval();
                 } catch (TrackerException | RuntimeException e) {
-                    LOG.log(System.Logger.Level.DEBUG, () -> "tracker " + tracker.uri() + " announce 失敗: " + e.getMessage());
+                    LOG.log(System.Logger.Level.DEBUG, () -> "tracker " + tracker.uri() + " announce failed: " + e.getMessage());
                 }
             }
         }
-        LOG.log(System.Logger.Level.WARNING, () -> "所有 tracker 皆 announce 失敗（event=" + event + "），" + RETRY_DELAY.toSeconds() + "s 後重試");
+        LOG.log(System.Logger.Level.WARNING, () -> "all trackers failed to announce (event=" + event + "), retrying in " + RETRY_DELAY.toSeconds() + "s");
         return null;
     }
 }

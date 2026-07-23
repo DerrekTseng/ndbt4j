@@ -170,13 +170,13 @@ public final class MetadataExchange implements Extension {
             if (InfoHash.ofInfoDict(buffer).equals(expected)) {
                 completed = buffer;
             } else {
-                LOG.log(System.Logger.Level.WARNING, () -> "metadata SHA-1 與 info-hash 不符（偽造/損毀），丟棄重來: " + expected.hex());
+                LOG.log(System.Logger.Level.WARNING, () -> "metadata SHA-1 mismatch with info-hash (forged/corrupt), discarding and retrying: " + expected.hex());
                 buffer = null; // 偽造或損毀：整個重來（之後的 extension handshake 會重新初始化）
                 received = null;
             }
         }
         if (completed != null) {
-            LOG.log(System.Logger.Level.DEBUG, () -> "metadata 取得完成並通過驗證: " + expected.hex());
+            LOG.log(System.Logger.Level.DEBUG, () -> "metadata fetched and verified: " + expected.hex());
             supplied = completed;
             future.complete(completed.clone());
         }

@@ -19,6 +19,7 @@ BitTorrent 下載套件（library），純 Java 實作。
 
 - 一律用 JDK 內建 `System.Logger`（`System.getLogger(Xxx.class.getName())`），維持零依賴。
 - **只用 WARNING / ERROR / DEBUG / TRACE 四個等級，不使用 INFO。**
+- **log 訊息一律用英文**（程式碼註解可用中文，但 log 輸出全英文）。
 - DEBUG/TRACE 訊息用 lambda supplier（`LOG.log(Level.DEBUG, () -> ...)`）避免未啟用時的字串成本。
 - 引用方要導向 slf4j/logback：在「引用方」專案加 `org.slf4j:slf4j-jdk-platform-logging`，bt4j 本身不加任何依賴。
 

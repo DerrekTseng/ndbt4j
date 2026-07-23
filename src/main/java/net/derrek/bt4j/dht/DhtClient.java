@@ -117,7 +117,7 @@ public final class DhtClient implements AutoCloseable {
             // 離線環境：表維持空，之後的 lookup 仍會嘗試 bootstrap 位址
         } finally {
             bootstrapped.countDown();
-            LOG.log(System.Logger.Level.DEBUG, () -> "DHT bootstrap 完成，路由表 " + table.size() + " 個節點");
+            LOG.log(System.Logger.Level.DEBUG, () -> "DHT bootstrap done, routing table has " + table.size() + " nodes");
         }
     }
 
@@ -238,8 +238,8 @@ public final class DhtClient implements AutoCloseable {
         if (announceTcpPort != null) {
             announceToClosest(target, targetId, announceTcpPort, responded, tokens);
         }
-        LOG.log(System.Logger.Level.DEBUG, () -> "DHT lookup " + target.hex() + " 找到 " + peers.size() + " 個 peer"
-                + (announceTcpPort != null ? "（並 announce port=" + announceTcpPort + "）" : ""));
+        LOG.log(System.Logger.Level.DEBUG, () -> "DHT lookup " + target.hex() + " found " + peers.size() + " peers"
+                + (announceTcpPort != null ? " (and announced port=" + announceTcpPort + ")" : ""));
         return List.copyOf(peers);
     }
 

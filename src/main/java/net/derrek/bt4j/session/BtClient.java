@@ -54,8 +54,8 @@ public final class BtClient implements AutoCloseable {
             ls.setReuseAddress(true);
             ls.bind(new InetSocketAddress(builder.listenPort));
         } catch (IOException e) {
-            LOG.log(Level.WARNING, "無法綁定 listen port " + builder.listenPort
-                    + "，將只能主動連出（無法接受連入）", e);
+            LOG.log(Level.WARNING, "could not bind listen port " + builder.listenPort
+                    + ", will only dial out (cannot accept incoming peers)", e);
             ls = null;
         }
         this.listenSocket = ls;
@@ -70,7 +70,7 @@ public final class BtClient implements AutoCloseable {
         }
         if (listenSocket != null) {
             Thread.ofVirtual().name("bt4j-accept").start(this::acceptLoop);
-            LOG.log(Level.DEBUG, () -> "接受連入 peer 於 TCP port " + listenPort);
+            LOG.log(Level.DEBUG, () -> "accepting incoming peers on TCP port " + listenPort);
         }
     }
 
@@ -90,7 +90,7 @@ public final class BtClient implements AutoCloseable {
                 socket = listenSocket.accept();
             } catch (IOException e) {
                 if (!closed) {
-                    LOG.log(Level.DEBUG, () -> "accept 失敗: " + e.getMessage());
+                    LOG.log(Level.DEBUG, () -> "accept failed: " + e.getMessage());
                 }
                 return;
             }

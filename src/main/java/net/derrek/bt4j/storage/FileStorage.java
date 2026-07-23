@@ -86,12 +86,12 @@ public final class FileStorage implements Storage {
         }
         pieceBuffers.remove(pieceIndex);
         if (!java.util.Arrays.equals(sha1(buffer), metainfo.pieceHash(pieceIndex))) {
-            LOG.log(System.Logger.Level.DEBUG, () -> "piece " + pieceIndex + " SHA-1 驗證失敗，丟棄重下");
+            LOG.log(System.Logger.Level.DEBUG, () -> "piece " + pieceIndex + " failed SHA-1 verification, discarded for re-download");
             return false;
         }
         writeVerifiedPiece(pieceIndex, buffer);
         completed.set(pieceIndex);
-        LOG.log(System.Logger.Level.TRACE, () -> "piece " + pieceIndex + " 驗證通過並落地");
+        LOG.log(System.Logger.Level.TRACE, () -> "piece " + pieceIndex + " verified and written to disk");
         return true;
     }
 
