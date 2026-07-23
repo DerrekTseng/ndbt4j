@@ -19,13 +19,14 @@
 - [x] `BValue.BDictionary.get(String)`、`BString` equals/hashCode（byte[] 內容比較）
 - [x] 單元測試：torture cases（22 tests——巢狀、空值、非 UTF-8 字串、前導零、溢位、深度炸彈、格式錯誤拒絕）
 
-## M1 — metainfo
+## M1 — metainfo ✅
 
-- [ ] `InfoHash`：hex/fromHex/ofInfoDict（SHA-1 用 `MessageDigest`）
-- [ ] `Metainfo.parse`：單檔/多檔、announce-list、private flag、piece hashes
-- [ ] `Metainfo.fromInfoDict` / `toTorrentBytes` / `saveTorrentFile`
-- [ ] `MagnetUri.parse`：btih hex、dn、tr、x.pe
-- [ ] 測試：對真實 .torrent 檔驗證 info-hash 與已知值一致
+- [x] `InfoHash`：hex/fromHex/fromBase32/ofInfoDict（SHA-1 用 `MessageDigest`）
+- [x] `Metainfo.parse`：單檔/多檔、announce-list、private flag、piece hashes、路徑穿越防護
+- [x] `Metainfo.fromInfoDict` / `toTorrentBytes` / `saveTorrentFile`（info 原始位元組直接嵌入，hash 不變）
+- [x] `MagnetUri.parse`：btih 支援 hex 與 Base32（測試連結見 doc/TEST-MAGNETS.md）、dn、tr、x.pe
+- [x] 測試：22 個（含非 canonical info dict 的 raw-bytes hash 驗證、使用者提供的 magnet 案例）
+- [ ] （延後至 M2/M3 整合測試）對真實 .torrent 檔驗證 info-hash
 
 ## M2 — HTTP tracker
 
