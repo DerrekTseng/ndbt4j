@@ -55,10 +55,12 @@
 - [ ] `TorrentSession.start` 重複呼叫 = 變更計畫
 - [ ] 驗收：端到端測試以 DownloadPlan 勾選部分檔案
 
-## M5 — UDP tracker + 多 tracker
+## M5 — UDP tracker + 多 tracker ✅
 
-- [ ] `UdpTracker`：connect/announce、connection id 快取、退避重送
-- [ ] `TrackerManager`：BEP 12 tiers、interval 排程、STARTED/COMPLETED/STOPPED
+- [x] `UdpTracker`：connect/announce 二段式、connection id 快取 50s、逾時翻倍重送（5/10/20s）、error action 轉例外、交易 id 驗證
+- [x] `TrackerManager`：BEP 12 tiers（建構時洗牌、成功者晉升 tier 最前）、interval 排程（上限 5 分鐘）、STARTED/COMPLETED/STOPPED 生命週期、全失敗 30s 重試
+- [x] `DefaultTorrentSession` 改用 TrackerManager（移除自製 announce 迴圈）
+- [x] 整合測試：對公開 UDP tracker（opentrackr:1337）announce 成功
 
 ## M6 — 擴充協定 + 磁力連結
 

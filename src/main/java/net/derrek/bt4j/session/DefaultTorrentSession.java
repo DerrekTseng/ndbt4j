@@ -30,9 +30,8 @@ import net.derrek.bt4j.storage.FileStorage;
 import net.derrek.bt4j.storage.ResumeData;
 import net.derrek.bt4j.tracker.AnnounceEvent;
 import net.derrek.bt4j.tracker.AnnounceRequest;
-import net.derrek.bt4j.tracker.AnnounceResponse;
 import net.derrek.bt4j.tracker.Tracker;
-import net.derrek.bt4j.tracker.TrackerException;
+import net.derrek.bt4j.tracker.TrackerManager;
 
 /**
  * TorrentSession 的預設實作（M3：.torrent 來源、下載與驗證；magnet 於 M6、上傳於 M8）。
@@ -41,7 +40,6 @@ final class DefaultTorrentSession implements TorrentSession {
 
     /** 每連線同時外送的 request 數（pipeline 深度）。 */
     private static final int PIPELINE_DEPTH = 16;
-    private static final Duration MAX_ANNOUNCE_WAIT = Duration.ofMinutes(5);
 
     private final Metainfo metainfo;
     private final PeerId peerId;
@@ -63,9 +61,8 @@ final class DefaultTorrentSession implements TorrentSession {
     private volatile PieceSelection selection;
     private volatile FileStorage storage;
     private volatile RarestFirstPicker picker;
-    private volatile Thread announceThread;
+    private volatile TrackerManager trackerManager;
     private volatile Thread connectorThread;
-    private volatile boolean completedAnnouncePending;
 
     // 速率計算（stats() 呼叫間的差分）
     private long lastRateTime = System.nanoTime();
@@ -112,7 +109,8 @@ final class DefaultTorrentSession implements TorrentSession {
             this.storage = new FileStorage(metainfo, selection, plan.saveTo());
             this.picker = new RarestFirstPicker(metainfo, selection, storage.completedPieces());
             setState(SessionState.DOWNLOADING);
-            this.announceThread = Thread.ofVirtual().name("bt4j-announce-" + infoHash().hex()).start(this::announceLoop);
+            this.trackerManager = new TrackerManager(buildTiers(), this::request, this::onPeersFound);
+            this.trackerManager.start();
             this.connectorThread = Thread.ofVirtual().name("bt4j-connect-" + infoHash().hex()).start(this::connectorLoop);
         }
     }
@@ -216,9 +214,9 @@ final class DefaultTorrentSession implements TorrentSession {
             worker.connection.close();
         }
         workers.clear();
-        Thread a = announceThread;
-        if (a != null) {
-            a.interrupt();
+        TrackerManager tm = trackerManager;
+        if (tm != null) {
+            tm.close(); // 會在排程 thread 上盡力送 stopped
         }
         Thread c = connectorThread;
         if (c != null) {
@@ -228,57 +226,31 @@ final class DefaultTorrentSession implements TorrentSession {
 
     // ---- tracker announce ----
 
-    private void announceLoop() {
-        List<Tracker> trackers = buildTrackers();
-        AnnounceEvent nextEvent = AnnounceEvent.STARTED;
-        while (state == SessionState.DOWNLOADING || state == SessionState.SEEDING) {
-            Duration interval = MAX_ANNOUNCE_WAIT;
-            AnnounceEvent event = completedAnnouncePending ? AnnounceEvent.COMPLETED : nextEvent;
-            for (Tracker tracker : trackers) {
-                try {
-                    AnnounceResponse response = tracker.announce(request(event));
-                    completedAnnouncePending = false;
-                    nextEvent = AnnounceEvent.NONE;
-                    interval = response.interval();
-                    for (PeerAddress peer : response.peers()) {
-                        if (knownPeers.add(peer)) {
-                            peerQueue.offer(peer);
-                        }
-                    }
-                    break; // 一個 tracker 成功即可
-                } catch (TrackerException | UnsupportedOperationException ignored) {
-                    // 換下一個 tracker
-                }
-            }
-            try {
-                Thread.sleep(Math.min(interval.toMillis(), MAX_ANNOUNCE_WAIT.toMillis()));
-            } catch (InterruptedException e) {
-                // 兩種喚醒：下載完成（回到迴圈頂送 completed）或關閉（狀態已變，迴圈條件退出）
-            }
-        }
-        Thread.interrupted(); // 清除中斷旗標，避免 stopped announce 立刻被中斷
-        // 結束時盡力送 stopped（不阻塞關閉流程）
-        for (Tracker tracker : trackers) {
-            try {
-                tracker.announce(request(AnnounceEvent.STOPPED));
-                break;
-            } catch (TrackerException | UnsupportedOperationException ignored) {
+    private void onPeersFound(List<PeerAddress> peers) {
+        for (PeerAddress peer : peers) {
+            if (knownPeers.add(peer)) {
+                peerQueue.offer(peer);
             }
         }
     }
 
-    private List<Tracker> buildTrackers() {
-        List<Tracker> result = new ArrayList<>();
+    /** BEP 12 tier 結構（tier 內順序由 TrackerManager 洗牌與晉升管理）。不支援的 scheme 個別略過。 */
+    private List<List<Tracker>> buildTiers() {
+        List<List<Tracker>> tiers = new ArrayList<>();
         for (List<java.net.URI> tier : metainfo.announceList()) {
+            List<Tracker> trackers = new ArrayList<>();
             for (java.net.URI uri : tier) {
                 try {
-                    result.add(Tracker.of(uri));
+                    trackers.add(Tracker.of(uri));
                 } catch (RuntimeException ignored) {
-                    // 不支援的 scheme（udp 至 M5）
+                    // 不支援的 scheme（ws 等）
                 }
             }
+            if (!trackers.isEmpty()) {
+                tiers.add(trackers);
+            }
         }
-        return result;
+        return tiers;
     }
 
     private AnnounceRequest request(AnnounceEvent event) {
@@ -437,12 +409,11 @@ final class DefaultTorrentSession implements TorrentSession {
             if (state != SessionState.DOWNLOADING) {
                 return;
             }
-            completedAnnouncePending = true;
             setState(SessionState.SEEDING);
         }
-        Thread a = announceThread;
-        if (a != null) {
-            a.interrupt(); // 提早醒來送 completed announce
+        TrackerManager tm = trackerManager;
+        if (tm != null) {
+            tm.announceCompleted();
         }
         for (SessionListener listener : listeners) {
             listener.onDownloadCompleted(this);
