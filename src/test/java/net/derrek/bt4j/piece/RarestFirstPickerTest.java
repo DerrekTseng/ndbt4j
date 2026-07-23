@@ -128,6 +128,31 @@ class RarestFirstPickerTest {
     }
 
     @Test
+    void pickFromPieceReturnsBlocksForThatPieceOnly() {
+        Metainfo meta = meta(); // 3 pieces
+        RarestFirstPicker picker = picker(meta);
+
+        List<BlockRequest> blocks = picker.pickFromPiece(1, 100);
+        assertFalse(blocks.isEmpty());
+        assertTrue(blocks.stream().allMatch(b -> b.pieceIndex() == 1));
+        // 重複呼叫不再回同一 block（已標記 requested）
+        assertTrue(picker.pickFromPiece(1, 100).isEmpty());
+    }
+
+    @Test
+    void pickFromPieceRejectsCompletedOrOutOfRange() {
+        Metainfo meta = meta();
+        RarestFirstPicker picker = picker(meta);
+        // 先完成 piece 0
+        picker.onPeerBitfield(full(3));
+        for (BlockRequest b : picker.pickFromPiece(0, 100)) {
+            picker.onBlockReceived(b).ifPresent(p -> picker.onPieceVerified(p, true));
+        }
+        assertTrue(picker.pickFromPiece(0, 100).isEmpty(), "已完成的 piece 不再挑");
+        assertTrue(picker.pickFromPiece(99, 100).isEmpty(), "超範圍回空");
+    }
+
+    @Test
     void availabilityDropsWhenPeerLeaves() {
         Metainfo meta = meta();
         RarestFirstPicker picker = picker(meta);

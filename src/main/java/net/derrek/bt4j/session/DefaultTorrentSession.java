@@ -31,8 +31,10 @@ import net.derrek.bt4j.peer.PeerAddress;
 import net.derrek.bt4j.peer.PeerConnection;
 import net.derrek.bt4j.peer.PeerId;
 import net.derrek.bt4j.peer.PeerMessage;
+import net.derrek.bt4j.peer.ext.Extension;
 import net.derrek.bt4j.peer.ext.ExtensionRegistry;
 import net.derrek.bt4j.peer.ext.MetadataExchange;
+import net.derrek.bt4j.peer.ext.PeerExchange;
 import net.derrek.bt4j.piece.Bitfield;
 import net.derrek.bt4j.piece.BlockRequest;
 import net.derrek.bt4j.piece.PieceSelection;
@@ -68,6 +70,9 @@ final class DefaultTorrentSession implements TorrentSession {
     private final MetadataExchange metadataExchange;
     private final CompletableFuture<Metainfo> metadataFuture = new CompletableFuture<>();
 
+    /** 一個 peer 連續造成 piece 驗證失敗達此次數即封鎖。 */
+    private static final int MAX_PEER_STRIKES = 3;
+
     private final List<SessionListener> listeners = new CopyOnWriteArrayList<>();
     private final Map<PeerAddress, PeerWorker> workers = new ConcurrentHashMap<>();
     private final Set<PeerAddress> knownPeers = ConcurrentHashMap.newKeySet();
@@ -76,6 +81,11 @@ final class DefaultTorrentSession implements TorrentSession {
     private final AtomicLong downloadedBytes = new AtomicLong();
     private final AtomicLong uploadedBytes = new AtomicLong();
     private final AtomicLong verifiedWantedBytes = new AtomicLong();
+
+    // 壞 peer 追蹤：piece → 貢獻過 block 的 peer；每個 peer 的驗證失敗次數；封鎖名單
+    private final Map<Integer, Set<PeerAddress>> pieceContributors = new ConcurrentHashMap<>();
+    private final Map<PeerAddress, Integer> peerStrikes = new ConcurrentHashMap<>();
+    private final Set<PeerAddress> bannedPeers = ConcurrentHashMap.newKeySet();
 
     private final Object lock = new Object();
     private final Object listenerLock = new Object(); // 守護「加入 listener」與「補發 metadata 事件」的原子性
@@ -88,6 +98,7 @@ final class DefaultTorrentSession implements TorrentSession {
     private volatile TrackerManager trackerManager;
     private volatile Thread connectorThread;
     private volatile Thread dhtThread;
+    private volatile Thread pexThread;
 
     // 速率計算（stats() 呼叫間的差分）
     private long lastRateTime = System.nanoTime();
@@ -264,6 +275,31 @@ final class DefaultTorrentSession implements TorrentSession {
                     .name("bt4j-connect-" + infoHash.hex()).start(this::connectorLoop);
         }
         startDhtLoop();
+        startPexLoop();
+    }
+
+    /** 週期性對支援 ut_pex 的 peer 交換 peer 清單（BEP 11）；private torrent 不啟用。 */
+    private void startPexLoop() {
+        Metainfo meta = metainfo;
+        if (meta != null && meta.isPrivate()) {
+            return;
+        }
+        pexThread = Thread.ofVirtual().name("bt4j-pex-" + infoHash.hex()).start(this::pexLoop);
+    }
+
+    private void pexLoop() {
+        while (isActive()) {
+            try {
+                Thread.sleep(60_000);
+            } catch (InterruptedException e) {
+                return;
+            }
+            for (PeerWorker worker : workers.values()) {
+                if (worker.pex != null) {
+                    worker.pex.tick(worker.connection, worker.registry);
+                }
+            }
+        }
     }
 
     /** 週期性 DHT 找 peer / 宣告；private torrent（BEP 27）不啟用。 */
@@ -438,13 +474,18 @@ final class DefaultTorrentSession implements TorrentSession {
         if (d != null) {
             d.interrupt();
         }
+        Thread px = pexThread;
+        pexThread = null;
+        if (px != null) {
+            px.interrupt();
+        }
     }
 
     // ---- tracker announce ----
 
     private void onPeersFound(List<PeerAddress> peers) {
         for (PeerAddress peer : peers) {
-            if (knownPeers.add(peer)) {
+            if (!bannedPeers.contains(peer) && knownPeers.add(peer)) {
                 peerQueue.offer(peer);
             }
         }
@@ -493,7 +534,7 @@ final class DefaultTorrentSession implements TorrentSession {
             } catch (InterruptedException e) {
                 return;
             }
-            if (address == null || workers.size() >= maxPeers) {
+            if (address == null || workers.size() >= maxPeers || bannedPeers.contains(address)) {
                 continue;
             }
             PeerWorker worker = new PeerWorker(address);
@@ -515,6 +556,10 @@ final class DefaultTorrentSession implements TorrentSession {
         }
         InetSocketAddress remote = (InetSocketAddress) socket.getRemoteSocketAddress();
         PeerAddress address = new PeerAddress(remote);
+        if (bannedPeers.contains(address)) {
+            closeQuietly(socket);
+            return;
+        }
         PeerWorker worker = new PeerWorker(socket, theirHandshake);
         if (workers.putIfAbsent(address, worker) == null) {
             LOG.log(Level.DEBUG, () -> "accepted incoming peer: " + address);
@@ -535,13 +580,18 @@ final class DefaultTorrentSession implements TorrentSession {
     private final class PeerWorker implements PeerConnection.Listener {
 
         final PeerConnection connection;
-        final ExtensionRegistry registry = new ExtensionRegistry(List.of(metadataExchange));
+        final ExtensionRegistry registry;
+        final PeerExchange pex; // null = 停用（metadata 階段或 private torrent）
         final Set<BlockRequest> outstanding = ConcurrentHashMap.newKeySet();
+        final Set<Integer> allowedFast = ConcurrentHashMap.newKeySet();
         final boolean downloadMode;
+        private volatile boolean peerFast;
 
         PeerWorker(PeerAddress address) {
             Metainfo meta = metainfo;
             this.downloadMode = meta != null;
+            this.pex = pexEnabled() ? new PeerExchange(workers::keySet, DefaultTorrentSession.this::onPeersFound) : null;
+            this.registry = new ExtensionRegistry(extensions(pex));
             this.connection = PeerConnection.outgoing(
                     address, infoHash, peerId, downloadMode ? meta.pieceCount() : 0, dht != null, this);
         }
@@ -549,8 +599,14 @@ final class DefaultTorrentSession implements TorrentSession {
         /** 連入連線（一定已知 metadata）。 */
         PeerWorker(Socket socket, Handshake theirHandshake) {
             this.downloadMode = true;
+            this.pex = pexEnabled() ? new PeerExchange(workers::keySet, DefaultTorrentSession.this::onPeersFound) : null;
+            this.registry = new ExtensionRegistry(extensions(pex));
             this.connection = PeerConnection.incoming(
                     socket, theirHandshake, infoHash, peerId, metainfo.pieceCount(), dht != null, this);
+        }
+
+        private List<Extension> extensions(PeerExchange pexOrNull) {
+            return pexOrNull == null ? List.of(metadataExchange) : List.of(metadataExchange, pexOrNull);
         }
 
         @Override
@@ -562,8 +618,14 @@ final class DefaultTorrentSession implements TorrentSession {
                 conn.send(new PeerMessage.Port(dht.port())); // 交換 DHT 節點（BEP 5）
             }
             if (downloadMode) {
+                this.peerFast = theirs.supportsFastExtension();
                 Bitfield have = storage.completedPieces();
-                if (have.cardinality() > 0) {
+                // Fast Extension（BEP 6）：完整/全空時用 HaveAll/HaveNone 取代整個 bitfield
+                if (peerFast && have.isComplete()) {
+                    conn.send(new PeerMessage.HaveAll());
+                } else if (peerFast && have.cardinality() == 0) {
+                    conn.send(new PeerMessage.HaveNone());
+                } else if (have.cardinality() > 0) {
                     conn.send(new PeerMessage.BitfieldMessage(have));
                 }
                 if (picker != null && !picker.isComplete()) {
@@ -593,6 +655,13 @@ final class DefaultTorrentSession implements TorrentSession {
                 case PeerMessage.BitfieldMessage(Bitfield bf) -> picker.onPeerBitfield(bf);
                 case PeerMessage.Have(int piece) -> picker.onPeerHave(piece);
                 case PeerMessage.Piece(int piece, int begin, byte[] data) -> onBlock(piece, begin, data);
+                // ---- Fast Extension（BEP 6）----
+                case PeerMessage.HaveAll() -> picker.onPeerBitfield(conn.peerBitfield()); // 已由連線設為全滿
+                case PeerMessage.RejectRequest(int piece, int begin, int length) -> onReject(piece, begin, length);
+                case PeerMessage.AllowedFast(int piece) -> {
+                    allowedFast.add(piece);
+                    requestAllowedFast(piece);
+                }
                 // ---- 上傳路徑 ----
                 case PeerMessage.Interested() -> {
                     if (canUpload()) {
@@ -601,6 +670,7 @@ final class DefaultTorrentSession implements TorrentSession {
                 }
                 case PeerMessage.Request(int piece, int begin, int length) -> serveBlock(conn, piece, begin, length);
                 default -> {
+                    // HaveNone（peerBitfield 已清空）、SuggestPiece 等：忽略
                 }
             }
         }
@@ -629,6 +699,30 @@ final class DefaultTorrentSession implements TorrentSession {
             }
         }
 
+        /** choke 期間仍可向對方請求其宣告的 Allowed Fast piece（BEP 6）。 */
+        private void requestAllowedFast(int pieceIndex) {
+            if (state != SessionState.DOWNLOADING || !connection.peerBitfield().get(pieceIndex)) {
+                return;
+            }
+            int want = PIPELINE_DEPTH - outstanding.size();
+            if (want <= 0) {
+                return;
+            }
+            for (BlockRequest block : picker.pickFromPiece(pieceIndex, want)) {
+                if (outstanding.add(block)) {
+                    connection.send(new PeerMessage.Request(block.pieceIndex(), block.begin(), block.length()));
+                }
+            }
+        }
+
+        private void onReject(int pieceIndex, int begin, int length) {
+            BlockRequest block = new BlockRequest(pieceIndex, begin, length);
+            if (outstanding.remove(block)) {
+                picker.onRequestsAbandoned(List.of(block)); // 重新排入
+                fillPipeline();                              // 立即重試（可能同一 peer 或後續換 peer）
+            }
+        }
+
         private void abandonOutstanding() {
             List<BlockRequest> lost = new ArrayList<>(outstanding);
             outstanding.clear();
@@ -638,6 +732,9 @@ final class DefaultTorrentSession implements TorrentSession {
         private void onBlock(int pieceIndex, int begin, byte[] data) {
             outstanding.remove(new BlockRequest(pieceIndex, begin, data.length));
             downloadedBytes.addAndGet(data.length);
+            // 記錄此 piece 由哪些 peer 貢獻，供驗證失敗時追責
+            pieceContributors.computeIfAbsent(pieceIndex, k -> ConcurrentHashMap.newKeySet())
+                    .add(connection.address());
             storage.write(pieceIndex, begin, data);
             picker.onBlockReceived(new BlockRequest(pieceIndex, begin, data.length))
                     .ifPresent(this::completePiece);
@@ -653,8 +750,15 @@ final class DefaultTorrentSession implements TorrentSession {
                 return;
             }
             picker.onPieceVerified(pieceIndex, valid);
+            Set<PeerAddress> contributors = pieceContributors.remove(pieceIndex);
             if (!valid) {
-                return; // 該 piece 重新排入；壞 peer 黑名單於後續里程碑
+                // piece SHA-1 失敗：對貢獻過的 peer 記點，累積達門檻即封鎖
+                if (contributors != null) {
+                    for (PeerAddress contributor : contributors) {
+                        strikePeer(contributor);
+                    }
+                }
+                return; // 該 piece 重新排入
             }
             verifiedWantedBytes.addAndGet(selection.wantedBytesInPiece(pieceIndex));
             broadcastHave(pieceIndex);
@@ -664,29 +768,59 @@ final class DefaultTorrentSession implements TorrentSession {
             }
         }
 
-        /** 回應對方的 block 請求（上傳）。 */
+        /** 回應對方的 block 請求（上傳）；拒絕時若對方支援 Fast Extension 則明確回 RejectRequest。 */
         private void serveBlock(PeerConnection conn, int pieceIndex, int begin, int length) {
-            if (!canUpload() || conn.amChoking()) {
-                return;
-            }
             if (length <= 0 || length > MAX_UPLOAD_BLOCK || begin < 0) {
                 LOG.log(Level.WARNING, () -> "rejected malformed block request from " + conn.address()
                         + " piece=" + pieceIndex + " begin=" + begin + " length=" + length);
+                reject(conn, pieceIndex, begin, length);
                 return;
             }
-            if (pieceIndex < 0 || pieceIndex >= metainfo.pieceCount() || !storage.completedPieces().get(pieceIndex)) {
-                return; // 我方尚無此 piece
+            boolean haveIt = pieceIndex >= 0 && pieceIndex < metainfo.pieceCount()
+                    && storage.completedPieces().get(pieceIndex);
+            if (!canUpload() || conn.amChoking() || !haveIt) {
+                reject(conn, pieceIndex, begin, length);
+                return;
             }
             byte[] data;
             try {
                 data = storage.read(pieceIndex, begin, length);
             } catch (IOException | RuntimeException e) {
                 LOG.log(Level.WARNING, "failed to read piece " + pieceIndex + " for upload", e);
+                reject(conn, pieceIndex, begin, length);
                 return;
             }
             conn.send(new PeerMessage.Piece(pieceIndex, begin, data));
             uploadedBytes.addAndGet(length);
             LOG.log(Level.TRACE, () -> "uploaded block piece=" + pieceIndex + " begin=" + begin + " -> " + conn.address());
+        }
+
+        private void reject(PeerConnection conn, int pieceIndex, int begin, int length) {
+            if (peerFast) {
+                conn.send(new PeerMessage.RejectRequest(pieceIndex, begin, length));
+            }
+        }
+    }
+
+    private boolean pexEnabled() {
+        Metainfo meta = metainfo;
+        return meta != null && !meta.isPrivate();
+    }
+
+    /** 測試用：目前封鎖的 peer 數。 */
+    int bannedPeerCount() {
+        return bannedPeers.size();
+    }
+
+    /** 記一次驗證失敗給某 peer；累積達門檻即封鎖並斷線。 */
+    private void strikePeer(PeerAddress address) {
+        int strikes = peerStrikes.merge(address, 1, Integer::sum);
+        if (strikes >= MAX_PEER_STRIKES && bannedPeers.add(address)) {
+            LOG.log(Level.WARNING, () -> "banning peer " + address + " after " + strikes + " bad pieces");
+            PeerWorker worker = workers.get(address);
+            if (worker != null) {
+                worker.connection.close();
+            }
         }
     }
 

@@ -115,7 +115,7 @@ public final class PeerConnection implements AutoCloseable {
                 in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
                 out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
                 // 對方 handshake 已由呼叫端讀出並驗證 info-hash；回送我方 handshake
-                out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, false).encode());
+                out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, true).encode());
                 out.flush();
                 theirs = incomingHandshake;
                 LOG.log(Level.DEBUG, () -> "incoming connection established: " + address);
@@ -132,7 +132,7 @@ public final class PeerConnection implements AutoCloseable {
                 in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
                 out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
 
-                out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, false).encode());
+                out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, true).encode());
                 out.flush();
                 byte[] response = in.readNBytes(Handshake.LENGTH);
                 if (response.length != Handshake.LENGTH) {

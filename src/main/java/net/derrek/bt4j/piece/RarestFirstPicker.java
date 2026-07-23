@@ -124,6 +124,26 @@ public final class RarestFirstPicker implements PiecePicker {
         return out;
     }
 
+    /**
+     * 只針對指定 piece 挑 block（Fast Extension 的 Allowed Fast：即使被 choke 也可請求）。
+     * piece 已完成/非需求時回傳空。
+     */
+    public synchronized List<BlockRequest> pickFromPiece(int pieceIndex, int maxBlocks) {
+        List<BlockRequest> out = new ArrayList<>();
+        if (pieceIndex < 0 || pieceIndex >= availability.length
+                || !selection.isWanted(pieceIndex) || verified.get(pieceIndex)) {
+            return out;
+        }
+        PieceProgress progress = active.computeIfAbsent(pieceIndex, p -> new PieceProgress(blockCount(p)));
+        for (int b = 0; b < progress.blockCount && out.size() < maxBlocks; b++) {
+            if (!progress.requested.get(b)) {
+                progress.requested.set(b);
+                out.add(blockRequest(pieceIndex, b));
+            }
+        }
+        return out;
+    }
+
     private void fillFrom(int pieceIndex, PieceProgress progress, Bitfield peerHas,
                           List<BlockRequest> out, int maxBlocks) {
         if (!peerHas.get(pieceIndex)) {

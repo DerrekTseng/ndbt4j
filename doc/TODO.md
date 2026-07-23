@@ -92,13 +92,14 @@
 - [x] 全面 logging：`System.Logger`（零依賴，只用 WARNING/ERROR/DEBUG/TRACE，無 INFO；引用方可橋接 slf4j）
 - [x] 驗收：兩個 bt4j client 一做種一下載（走真實 wire）、部分完成 resume 續傳只索取缺少 piece、stopped resume 保持 STOPPED
 
-## M9 — 擴充功能
+## M9 — 擴充功能 ✅（限速除外，見待決）
 
-- [ ] `PeerExchange`（BEP 11，≥60s 週期）
-- [ ] Fast Extension 訊息處理（BEP 6）
-- [ ] private torrent（BEP 27）：停用 DHT/PEX（DHT 部分已於 M7 完成）
-- [ ] 壞 peer 黑名單（連續送壞 piece）
-- [ ] 全域限速（見待決）
+- [x] `PeerExchange`（BEP 11）：每連線一實例、≥60s 週期 tick、added/dropped 差異、added6(IPv6)、寬容解析；session 週期迴圈驅動
+- [x] Fast Extension（BEP 6）：握手宣告 fast bit、完整/全空用 HaveAll/HaveNone、收到 RejectRequest 重排並立即重試、AllowedFast 於 choke 期間仍請求（`RarestFirstPicker.pickFromPiece`）、拒絕上傳時回 RejectRequest
+- [x] private torrent（BEP 27）：停用 DHT（M7）與 PEX；`pexEnabled()`/`startPexLoop`/`startDhtLoop` 皆檢查 isPrivate
+- [x] 壞 peer 黑名單：piece 驗證失敗對貢獻 block 的 peer 記點，達 3 次封鎖並斷線；connector/acceptIncoming/onPeersFound 皆略過封鎖名單
+- [x] 測試：PEX build/parse 往返、pickFromPiece、Fast Extension（RejectRequest 後仍完成下載）、惡意 seeder 被封鎖（140 tests）
+- [ ] 全域限速（見待決——唯一未決項）
 
 ## 待決（實作前要拍板）
 
