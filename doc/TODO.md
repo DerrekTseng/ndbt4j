@@ -9,14 +9,15 @@
 - [x] pom.xml 設定 Java 25、零依賴
 - [x] 設計草稿（DESIGN-DRAFT.md）
 - [x] 全部 class/interface 骨架（`net.derrek.bt4j`，可編譯）
-- [ ] 決定測試框架：JUnit（test scope 依賴）或純 main 方法測試 ← 需使用者確認
+- [x] 決定測試框架：JUnit 5（test scope，使用者已確認 2026-07-23）
+- [x] artifactId 改為 `bt4j`
 
-## M0 — bencoding
+## M0 — bencoding ✅
 
-- [ ] `Bencode.decode`（含 offset 版本、raw bytes 區段回報）
-- [ ] `Bencode.encode`（canonical：dict key 排序）
-- [ ] `BValue.BDictionary.get(String)`
-- [ ] 單元測試：torture cases（巢狀、空值、非 UTF-8 字串、格式錯誤拒絕）
+- [x] `Bencode.decode`（含 offset 版本、raw bytes 區段回報）
+- [x] `Bencode.encode`（canonical：dict key 無號位元組排序）
+- [x] `BValue.BDictionary.get(String)`、`BString` equals/hashCode（byte[] 內容比較）
+- [x] 單元測試：torture cases（22 tests——巢狀、空值、非 UTF-8 字串、前導零、溢位、深度炸彈、格式錯誤拒絕）
 
 ## M1 — metainfo
 

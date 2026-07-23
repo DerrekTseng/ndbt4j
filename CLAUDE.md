@@ -5,7 +5,8 @@ BitTorrent 下載套件（library），純 Java 實作。
 ## 硬性限制
 
 - **Java 25**（本機為 OpenJDK 25），可使用最新語言特性（record、sealed、pattern matching、virtual threads 等）。
-- **零外部依賴**：`pom.xml` 不得加入任何 `<dependencies>`（測試用依賴例外，需先與使用者確認）。Maven 僅作為建置工具。
+- **執行期零外部依賴**：`pom.xml` 只允許 test scope 依賴（JUnit 5 已獲使用者同意）。Maven 僅作為建置工具。
+- artifactId 為 `bt4j`（與根 package `net.derrek.bt4j` 一致）。
 - 網路層只用 Java 原生 API：`java.net.Socket` / `ServerSocket` / `DatagramSocket`（或 `java.nio` channels）。
 
 ## 程式結構
