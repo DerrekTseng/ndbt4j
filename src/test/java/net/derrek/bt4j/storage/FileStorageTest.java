@@ -147,6 +147,64 @@ class FileStorageTest {
     }
 
     @Test
+    void filesArePreallocatedToTheirFullLength(@TempDir Path tmp) throws IOException {
+        byte[] content = TorrentFixtures.randomBytes(40000, 55); // 3 pieces
+        Metainfo meta = TorrentFixtures.singleFile("prealloc.bin", content, PIECE_LENGTH, "http://t/a");
+        try (FileStorage storage = new FileStorage(meta, PieceSelection.of(meta, Set.of()), tmp)) {
+            // writing only the FIRST piece must already size the whole file
+            writePiece(storage, meta, content, 0);
+            assertTrue(storage.verifyPiece(0));
+            assertEquals(content.length, Files.size(tmp.resolve("prealloc.bin")),
+                    "file should be preallocated to its full length, not grown piece by piece");
+        }
+    }
+
+    @Test
+    void parallelRecheckVerifiesEveryPiece(@TempDir Path tmp) throws IOException {
+        // Enough pieces that the recheck fans out across workers; result must match a sequential scan exactly.
+        byte[] content = TorrentFixtures.randomBytes(50 * PIECE_LENGTH + 123, 56);
+        Metainfo meta = TorrentFixtures.singleFile("recheck.bin", content, PIECE_LENGTH, "http://t/a");
+        PieceSelection selection = PieceSelection.of(meta, Set.of());
+
+        try (FileStorage first = new FileStorage(meta, selection, tmp)) {
+            for (int p = 0; p < meta.pieceCount(); p++) {
+                writePiece(first, meta, content, p);
+                first.verifyPiece(p);
+            }
+        }
+        try (FileStorage second = new FileStorage(meta, selection, tmp)) {
+            assertTrue(second.recheck().isComplete(), "a parallel recheck should find every piece on disk");
+        }
+
+        // corrupt one piece on disk: recheck must find exactly that piece missing
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(tmp.resolve("recheck.bin").toFile(), "rw")) {
+            raf.seek(7L * PIECE_LENGTH + 10);
+            raf.write(0xFF ^ raf.readByte());
+        }
+        try (FileStorage third = new FileStorage(meta, selection, tmp)) {
+            var bits = third.recheck();
+            assertFalse(bits.get(7), "the corrupted piece must not be marked complete");
+            assertEquals(meta.pieceCount() - 1, bits.cardinality(), "every other piece should still verify");
+        }
+    }
+
+    @Test
+    void flushIsSafeAndIdempotent(@TempDir Path tmp) throws IOException {
+        byte[] content = TorrentFixtures.randomBytes(20000, 57);
+        Metainfo meta = TorrentFixtures.singleFile("f.bin", content, PIECE_LENGTH, "http://t/a");
+        try (FileStorage storage = new FileStorage(meta, PieceSelection.of(meta, Set.of()), tmp)) {
+            storage.flush(); // no channels open yet
+            for (int p = 0; p < meta.pieceCount(); p++) {
+                writePiece(storage, meta, content, p);
+                storage.verifyPiece(p);
+            }
+            storage.flush();
+            storage.flush();
+            assertArrayEquals(content, Files.readAllBytes(tmp.resolve("f.bin")));
+        }
+    }
+
+    @Test
     void recheckRestoresCompletedPiecesFromDisk(@TempDir Path tmp) throws IOException {
         byte[] content = TorrentFixtures.randomBytes(40000, 31); // 3 pieces
         Metainfo meta = TorrentFixtures.singleFile("r.bin", content, PIECE_LENGTH, "http://t/a");

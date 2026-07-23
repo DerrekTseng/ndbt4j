@@ -27,4 +27,10 @@ public interface Storage extends Closeable {
 
     /** Re-verify existing files at startup (a full recheck when resume data is missing or untrusted). */
     Bitfield recheck() throws IOException;
+
+    /**
+     * Force written data to durable storage. Called before announcing completion, so a power loss cannot leave a
+     * torrent reported as complete while its final bytes are still sitting in the OS page cache.
+     */
+    void flush() throws IOException;
 }

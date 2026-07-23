@@ -1273,6 +1273,16 @@ final class DefaultTorrentSession implements TorrentSession {
     }
 
     private void onDownloadComplete() {
+        // Force the last pieces to durable storage before anyone is told the torrent is complete, so a power loss
+        // cannot leave a "finished" torrent whose final bytes never left the page cache.
+        FileStorage store = storage;
+        if (store != null) {
+            try {
+                store.flush();
+            } catch (IOException e) {
+                LOG.log(Level.WARNING, "failed to flush storage on completion", e);
+            }
+        }
         synchronized (lock) {
             if (state != SessionState.DOWNLOADING) {
                 return;

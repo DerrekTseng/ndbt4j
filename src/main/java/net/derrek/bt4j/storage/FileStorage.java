@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import net.derrek.bt4j.metainfo.FileEntry;
 import net.derrek.bt4j.metainfo.Metainfo;
 import net.derrek.bt4j.piece.Bitfield;
@@ -243,8 +245,23 @@ public final class FileStorage implements Storage {
         Files.createDirectories(path.getParent());
         FileChannel channel = FileChannel.open(path,
                 StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        if (createIfMissing) {
+            preallocate(channel, file.length());
+        }
         channels.put(file.index(), channel);
         return channel;
+    }
+
+    /**
+     * Reserve the file's full length up front (a single zero byte written at the last offset extends it).
+     * Keeps the file in far fewer filesystem extents than growing it piece by piece in random order, and makes a
+     * disk-full condition surface when the download starts rather than halfway through.
+     */
+    private static void preallocate(FileChannel channel, long length) throws IOException {
+        if (length <= 0 || channel.size() >= length) {
+            return;
+        }
+        channel.write(ByteBuffer.allocate(1), length - 1);
     }
 
     @Override
@@ -253,25 +270,139 @@ public final class FileStorage implements Storage {
     }
 
     @Override
-    public synchronized Bitfield recheck() throws IOException {
-        pieceBuffers.clear();
-        for (int p = 0; p < metainfo.pieceCount(); p++) {
-            if (completed.get(p)) {
-                continue;
+    public Bitfield recheck() throws IOException {
+        List<Integer> candidates = new ArrayList<>();
+        Map<Integer, FileChannel> snapshot = new HashMap<>();
+        synchronized (this) {
+            pieceBuffers.clear();
+            for (int p = 0; p < metainfo.pieceCount(); p++) {
+                if (completed.get(p)) {
+                    continue;
+                }
+                // A piece can be verified from disk only if it lies entirely within selected files; boundary pieces are always re-downloaded
+                if (selection.wantedBytesInPiece(p) != metainfo.pieceLengthAt(p)) {
+                    continue;
+                }
+                candidates.add(p);
             }
-            // A piece can be verified from disk only if it lies entirely within selected files; boundary pieces are always re-downloaded
-            if (selection.wantedBytesInPiece(p) != metainfo.pieceLengthAt(p)) {
-                continue;
+            if (candidates.isEmpty()) {
+                return completed.copy();
             }
-            byte[] buffer = new byte[metainfo.pieceLengthAt(p)];
-            if (readFromFiles((long) p * metainfo.pieceLength(), buffer, false) != buffer.length) {
-                continue; // file does not exist or is incomplete
-            }
-            if (java.util.Arrays.equals(sha1(buffer), metainfo.pieceHash(p))) {
-                completed.set(p);
+            // Pre-open every wanted, existing file so the scan below can read positionally without the lock.
+            // Missing files stay absent from the snapshot and make their pieces read as incomplete.
+            for (FileEntry file : metainfo.files()) {
+                if (!selection.isFileWanted(file.index()) || file.length() == 0) {
+                    continue;
+                }
+                FileChannel channel = channel(file, false);
+                if (channel != null) {
+                    snapshot.put(file.index(), channel);
+                }
             }
         }
-        return completed.copy();
+
+        // Hash candidate pieces concurrently: positional reads are thread-safe and SHA-1 is pure CPU, so a
+        // recheck of a large torrent scales with cores instead of running one piece at a time. Workers pull from
+        // a shared cursor and each keeps a single buffer, bounding memory to workers x pieceLength.
+        int workers = Math.max(1, Math.min(Runtime.getRuntime().availableProcessors(), candidates.size()));
+        AtomicInteger cursor = new AtomicInteger();
+        java.util.Set<Integer> verified = ConcurrentHashMap.newKeySet();
+        java.util.Queue<IOException> failures = new java.util.concurrent.ConcurrentLinkedQueue<>();
+        List<Thread> threads = new ArrayList<>(workers);
+        for (int w = 0; w < workers; w++) {
+            threads.add(Thread.ofVirtual().name("bt4j-recheck-" + w).start(() -> {
+                byte[] buffer = null;
+                int i;
+                while ((i = cursor.getAndIncrement()) < candidates.size()) {
+                    int piece = candidates.get(i);
+                    int length = metainfo.pieceLengthAt(piece);
+                    if (buffer == null || buffer.length != length) {
+                        buffer = new byte[length]; // exact size so the digest never covers stale trailing bytes
+                    }
+                    try {
+                        if (readFromSnapshot(snapshot, (long) piece * metainfo.pieceLength(), buffer) != length) {
+                            continue; // file missing or shorter than expected -> piece incomplete
+                        }
+                        if (java.util.Arrays.equals(sha1(buffer), metainfo.pieceHash(piece))) {
+                            verified.add(piece);
+                        }
+                    } catch (IOException e) {
+                        failures.add(e);
+                        return;
+                    }
+                }
+            }));
+        }
+        for (Thread t : threads) {
+            try {
+                t.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("recheck interrupted", e);
+            }
+        }
+        IOException failure = failures.poll();
+        if (failure != null) {
+            throw failure;
+        }
+        synchronized (this) {
+            for (int piece : verified) {
+                completed.set(piece);
+            }
+            return completed.copy();
+        }
+    }
+
+    /** Lock-free counterpart of {@link #readFromFiles} that reads through a pre-resolved channel snapshot. */
+    private int readFromSnapshot(Map<Integer, FileChannel> snapshot, long globalStart, byte[] out) throws IOException {
+        int filled = 0;
+        long globalEnd = globalStart + out.length;
+        for (FileEntry file : metainfo.files()) {
+            if (!selection.isFileWanted(file.index()) || file.length() == 0) {
+                continue;
+            }
+            long fileStart = file.offset();
+            long fileEnd = fileStart + file.length();
+            long overlapStart = Math.max(globalStart, fileStart);
+            long overlapEnd = Math.min(globalEnd, fileEnd);
+            if (overlapStart >= overlapEnd) {
+                continue;
+            }
+            FileChannel channel = snapshot.get(file.index());
+            if (channel == null) {
+                return filled; // file does not exist -> this piece is incomplete
+            }
+            ByteBuffer slice = ByteBuffer.wrap(out, (int) (overlapStart - globalStart), (int) (overlapEnd - overlapStart));
+            long position = overlapStart - fileStart;
+            while (slice.hasRemaining()) {
+                int n = channel.read(slice, position);
+                if (n < 0) {
+                    return filled; // file is shorter than expected (incomplete)
+                }
+                position += n;
+            }
+            filled += (int) (overlapEnd - overlapStart);
+        }
+        return filled;
+    }
+
+    @Override
+    public void flush() throws IOException {
+        List<FileChannel> open;
+        synchronized (this) {
+            if (closed) {
+                return;
+            }
+            open = new ArrayList<>(channels.values());
+        }
+        // force() outside the lock: it can block for a long time and must not stall arriving blocks.
+        for (FileChannel channel : open) {
+            try {
+                channel.force(false); // data only; file metadata is not part of the torrent's integrity
+            } catch (ClosedChannelException ignored) {
+                // closed underneath us during teardown
+            }
+        }
     }
 
     @Override
