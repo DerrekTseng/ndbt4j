@@ -29,14 +29,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * M9 Fast Extension（BEP 6）：seeder 對每個 block 先回 RejectRequest 再於重試時服務，
- * 驗證 leecher 收到 RejectRequest 會把 block 重新排入並最終完成下載。
+ * M9 Fast Extension (BEP 6): the seeder first replies with RejectRequest for each block and only serves it on retry,
+ * verifying that a leecher receiving RejectRequest re-queues the block and eventually completes the download.
  */
 class FastExtensionTest {
 
     private static final int PIECE_LENGTH = 16384;
 
-    /** seeder：宣告 fast bit；每個 (piece,begin) 第一次 reject、第二次才服務。 */
+    /** Seeder: advertises the fast bit; for each (piece,begin) it rejects the first time and only serves the second time. */
     private static final class RejectingSeeder implements AutoCloseable {
         private final ServerSocket server;
         private final Metainfo meta;
@@ -72,7 +72,7 @@ class FastExtensionTest {
                 DataInputStream in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
                 DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
                 Handshake theirs = Handshake.decode(in.readNBytes(Handshake.LENGTH));
-                // fast=true 宣告 Fast Extension
+                // fast=true advertises the Fast Extension
                 out.write(Handshake.outgoing(theirs.infoHash(), PeerId.generate(), false, true, true).encode());
                 out.flush();
                 Bitfield full = new Bitfield(meta.pieceCount());
@@ -85,7 +85,7 @@ class FastExtensionTest {
                         case PeerMessage.Request(int piece, int begin, int length) -> {
                             long key = ((long) piece << 32) | (begin & 0xFFFFFFFFL);
                             if (seen.add(key)) {
-                                PeerMessage.write(out, new PeerMessage.RejectRequest(piece, begin, length)); // 首次拒絕
+                                PeerMessage.write(out, new PeerMessage.RejectRequest(piece, begin, length)); // reject on first request
                             } else {
                                 int start = piece * PIECE_LENGTH + begin;
                                 PeerMessage.write(out, new PeerMessage.Piece(piece, begin,
@@ -132,7 +132,7 @@ class FastExtensionTest {
                     }
                 });
                 session.start(DownloadPlan.allFiles(tmp));
-                assertTrue(done.await(30, TimeUnit.SECONDS), "RejectRequest 後應重試並完成下載");
+                assertTrue(done.await(30, TimeUnit.SECONDS), "should retry after RejectRequest and complete the download");
                 assertArrayEquals(content, Files.readAllBytes(tmp.resolve("fast.bin")));
             }
         }

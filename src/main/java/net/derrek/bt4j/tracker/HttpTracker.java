@@ -16,8 +16,8 @@ import net.derrek.bt4j.bencode.BencodeException;
 import net.derrek.bt4j.peer.PeerAddress;
 
 /**
- * HTTP(S) tracker（BEP 3），要求 compact 回應（BEP 23）。
- * 以 java.net.http.HttpClient（JDK 內建）實作，阻塞式呼叫配合 virtual thread。
+ * HTTP(S) tracker (BEP 3), requesting a compact response (BEP 23).
+ * Implemented with java.net.http.HttpClient (built into the JDK); blocking calls paired with virtual threads.
  */
 public final class HttpTracker implements Tracker {
 
@@ -55,13 +55,13 @@ public final class HttpTracker implements Tracker {
         try {
             response = client.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
         } catch (IOException e) {
-            throw new TrackerException("連線 tracker 失敗: " + uri, e);
+            throw new TrackerException("failed to connect to tracker: " + uri, e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new TrackerException("announce 被中斷: " + uri, e);
+            throw new TrackerException("announce interrupted: " + uri, e);
         }
         if (response.statusCode() != 200) {
-            throw new TrackerException("tracker 回應 HTTP " + response.statusCode() + ": " + uri);
+            throw new TrackerException("tracker responded HTTP " + response.statusCode() + ": " + uri);
         }
         AnnounceResponse result = parseResponse(response.body());
         LOG.log(System.Logger.Level.DEBUG, () -> "HTTP tracker " + uri + " returned "
@@ -69,7 +69,7 @@ public final class HttpTracker implements Tracker {
         return result;
     }
 
-    /** 組 announce 查詢字串。info_hash / peer_id 是原始 20 bytes 逐位元組 percent-encode。 */
+    /** Builds the announce query string. info_hash / peer_id are the raw 20 bytes, percent-encoded byte by byte. */
     static String buildQuery(AnnounceRequest request) {
         StringBuilder sb = new StringBuilder();
         sb.append("info_hash=").append(percentEncode(request.infoHash().bytes()));
@@ -86,7 +86,7 @@ public final class HttpTracker implements Tracker {
         return sb.toString();
     }
 
-    /** RFC 3986：unreserved 字元原樣，其餘 %XX。適用於任意二進位資料。 */
+    /** RFC 3986: unreserved characters as-is, everything else as %XX. Works for arbitrary binary data. */
     static String percentEncode(byte[] bytes) {
         StringBuilder sb = new StringBuilder(bytes.length * 3);
         for (byte b : bytes) {
@@ -100,19 +100,19 @@ public final class HttpTracker implements Tracker {
         return sb.toString();
     }
 
-    /** 解析 bencoded 回應。peers 支援 compact（BEP 23）與 dict 清單（BEP 3）兩種形式。 */
+    /** Parses the bencoded response. peers supports both the compact form (BEP 23) and the dict list form (BEP 3). */
     static AnnounceResponse parseResponse(byte[] body) throws TrackerException {
         BValue decoded;
         try {
             decoded = Bencode.decode(body);
         } catch (BencodeException e) {
-            throw new TrackerException("tracker 回應不是合法 bencoding", e);
+            throw new TrackerException("tracker response is not valid bencoding", e);
         }
         if (!(decoded instanceof BValue.BDictionary dict)) {
-            throw new TrackerException("tracker 回應頂層必須是 dictionary");
+            throw new TrackerException("the top level of the tracker response must be a dictionary");
         }
         if (dict.get("failure reason").orElse(null) instanceof BValue.BString reason) {
-            throw new TrackerException("tracker 拒絕: " + reason.utf8());
+            throw new TrackerException("tracker rejected: " + reason.utf8());
         }
 
         Duration interval = dict.get("interval").orElse(null) instanceof BValue.BInteger(long seconds) && seconds > 0
@@ -125,7 +125,7 @@ public final class HttpTracker implements Tracker {
         switch (dict.get("peers").orElse(null)) {
             case BValue.BString(byte[] compact) -> peers.addAll(PeerAddress.fromCompact(compact));
             case BValue.BList list -> {
-                // 非 compact 形式：list of {ip, port}
+                // non-compact form: list of {ip, port}
                 for (BValue entry : list.values()) {
                     if (entry instanceof BValue.BDictionary peerDict
                             && peerDict.get("ip").orElse(null) instanceof BValue.BString ip
@@ -136,7 +136,7 @@ public final class HttpTracker implements Tracker {
                 }
             }
             case null, default -> {
-                // 沒有 peers 欄位：視為空清單（例如 stopped event 的回應）
+                // no peers field: treat as an empty list (e.g. the response to a stopped event)
             }
         }
         if (dict.get("peers6").orElse(null) instanceof BValue.BString(byte[] compact6)) {

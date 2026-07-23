@@ -19,7 +19,7 @@ class BitfieldTest {
         assertTrue(bf.get(9));
         assertFalse(bf.get(1));
         assertEquals(2, bf.cardinality());
-        // piece 0 = 第一個 byte 的 MSB；piece 9 = 第二個 byte 的 bit 1（MSB 順位）
+        // piece 0 = MSB of the first byte; piece 9 = bit 1 of the second byte (MSB-first ordering)
         assertArrayEquals(new byte[] {(byte) 0x80, 0x40}, bf.toBytes());
     }
 
@@ -41,7 +41,7 @@ class BitfieldTest {
         bf.setAll();
         assertTrue(bf.isComplete());
         assertEquals(9, bf.cardinality());
-        bf.set(3); // 重複 set 不影響 cardinality
+        bf.set(3); // setting again does not affect cardinality
         assertEquals(9, bf.cardinality());
     }
 
@@ -58,8 +58,8 @@ class BitfieldTest {
 
     @Test
     void rejectMalformedWireFormat() {
-        assertThrows(IllegalArgumentException.class, () -> Bitfield.fromBytes(new byte[2], 20)); // 長度錯
-        // padding bit 非 0：10 pieces 需 2 bytes，最後 6 bit 必須為 0
+        assertThrows(IllegalArgumentException.class, () -> Bitfield.fromBytes(new byte[2], 20)); // wrong length
+        // padding bit not 0: 10 pieces need 2 bytes, the last 6 bits must be 0
         assertThrows(IllegalArgumentException.class, () -> Bitfield.fromBytes(new byte[] {0, 0x01}, 10));
         assertThrows(IllegalArgumentException.class, () -> new Bitfield(0));
     }

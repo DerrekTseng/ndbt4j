@@ -11,14 +11,14 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * 真實世界端到端（需網路，預設不執行）：
- * 使用者提供的無 tracker 磁力連結（doc/TEST-MAGNETS.md 第 2 組），
- * 純靠公共 DHT 找 peer → 取 metadata → 實際下載並以 SHA-1 驗證 piece。
+ * Real-world end-to-end (requires network, disabled by default):
+ * A trackerless magnet link supplied by the user (doc/TEST-MAGNETS.md set 2),
+ * relying purely on the public DHT to find peers -> fetch metadata -> actually download and verify pieces via SHA-1.
  *
- * 為避免完整拉下整個檔案，跑到「至少一個 piece 通過驗證（progress > 0）」即停止——
- * 這已證明「連真實 peer → 請求 piece → 下載 → 驗證」的下載迴圈在真實網路可運作。
+ * To avoid pulling down the entire file, it stops as soon as "at least one piece passes verification (progress > 0)" --
+ * this already proves the download loop of "connect to real peer -> request piece -> download -> verify" works on a real network.
  *
- * 執行方式：{@code mvn test -Dbt4j.integration=true -Dtest=RealWorldDownloadIntegrationTest}
+ * How to run: {@code mvn test -Dbt4j.integration=true -Dtest=RealWorldDownloadIntegrationTest}
  */
 @EnabledIfSystemProperty(named = "bt4j.integration", matches = "true")
 class RealWorldDownloadIntegrationTest {
@@ -35,7 +35,7 @@ class RealWorldDownloadIntegrationTest {
             TorrentDownloadJob job = bt.createDownloadJob(content.getFileList(), tmp, false);
             TorrentDownloadTask task = bt.download(job);
 
-            // 等到至少一個 piece 通過 SHA-1 驗證（progress > 0），或整體完成
+            // Wait until at least one piece passes SHA-1 verification (progress > 0), or the whole thing completes
             long deadline = System.currentTimeMillis() + Duration.ofMinutes(4).toMillis();
             long lastLog = 0;
             while (task.progress() <= 0.0
@@ -51,17 +51,17 @@ class RealWorldDownloadIntegrationTest {
 
             System.out.printf("[real] verified %d bytes (%.3f%%) from real peers%n",
                     task.downloadedBytes(), task.progress() * 100);
-            assertFalse(task.state() == TaskState.ERROR, "session 不應進入 ERROR");
+            assertFalse(task.state() == TaskState.ERROR, "session should not enter ERROR");
             assertTrue(task.progress() > 0.0,
-                    "應至少有一個 piece 通過 SHA-1 驗證（下載迴圈在真實 swarm 運作）");
+                    "at least one piece should pass SHA-1 verification (the download loop works on a real swarm)");
 
-            bt.stop(task); // 證明完成，提前停止（不拉下整個檔案）
+            bt.stop(task); // proven, stop early (do not pull down the entire file)
         }
     }
 
     @Test
     void bothTestMagnetPairsShareInfoHash() {
-        // 額外健全性檢查（不需網路）：使用者兩組連結各自的 Base32 與 hex 為同一 hash
+        // Extra sanity check (no network needed): for each of the user's two link sets, the Base32 and hex forms are the same hash
         List<String[]> pairs = List.of(
                 new String[] {"IF4ZTTPVIENGKIVL5M2MEBMUGSTJ2GCU", "417999cdf5411a6522abeb34c2059434a69d1854"},
                 new String[] {"MFZWDEEO3XQBGD5Z4LWZXBKMD7GEM5AJ", "617361908edde0130fb9e2ed9b854c1fcc467409"});

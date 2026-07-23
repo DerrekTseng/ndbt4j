@@ -21,7 +21,7 @@ class KrpcMessageTest {
 
     @Test
     void decodeBep5PingExample() {
-        // BEP 5 文件中的 ping query 範例
+        // The ping query example from the BEP 5 document
         byte[] packet = "d1:ad2:id20:abcdefghij0123456789e1:q4:ping1:t2:aa1:y1:qe"
                 .getBytes(StandardCharsets.ISO_8859_1);
         KrpcMessage.Query query = assertInstanceOf(KrpcMessage.Query.class, KrpcMessage.decode(packet));

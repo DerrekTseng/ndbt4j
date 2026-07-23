@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 
 class MagnetUriTest {
 
-    // 使用者提供的兩條連結（doc/TEST-MAGNETS.md 第 1 組）：同一 info-hash 的 Base32 與 hex 形式
+    // two user-provided links (doc/TEST-MAGNETS.md, set 1): Base32 and hex forms of the same info-hash
     private static final String MAGNET_BASE32 = "magnet:?xt=urn:btih:IF4ZTTPVIENGKIVL5M2MEBMUGSTJ2GCU";
     private static final String MAGNET_HEX = "magnet:?xt=urn:btih:417999cdf5411a6522abeb34c2059434a69d1854";
 
@@ -25,7 +25,7 @@ class MagnetUriTest {
 
     @Test
     void secondUserProvidedPairAlsoMatches() {
-        // doc/TEST-MAGNETS.md 第 2 組
+        // doc/TEST-MAGNETS.md, set 2
         MagnetUri base32 = MagnetUri.parse("magnet:?xt=urn:btih:MFZWDEEO3XQBGD5Z4LWZXBKMD7GEM5AJ");
         MagnetUri hex = MagnetUri.parse("magnet:?xt=urn:btih:617361908edde0130fb9e2ed9b854c1fcc467409");
         assertEquals(hex.infoHash(), base32.infoHash());
@@ -68,7 +68,7 @@ class MagnetUriTest {
         assertThrows(IllegalArgumentException.class, () -> MagnetUri.parse("http://example.com"));
         assertThrows(IllegalArgumentException.class, () -> MagnetUri.parse("magnet:?dn=NoHash"));
         assertThrows(IllegalArgumentException.class, () -> MagnetUri.parse("magnet:?xt=urn:btih:tooshort"));
-        // v2 的 btmh 不支援，只有 btmh 沒有 btih 視為缺 xt
+        // v2 btmh is not supported; only btmh with no btih is treated as missing xt
         assertThrows(IllegalArgumentException.class, () -> MagnetUri.parse(
                 "magnet:?xt=urn:btmh:1220caf1e1c30e81cb361b9ee167c4aa64228a7fa4dd8381b8f2685b3ab3ebcb23d6"));
     }

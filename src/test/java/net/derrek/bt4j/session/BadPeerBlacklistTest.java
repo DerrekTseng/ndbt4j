@@ -24,14 +24,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * M9：壞 peer 黑名單。一個只送損毀資料的 seeder 會讓 piece 反覆驗證失敗，
- * 累積達門檻後被封鎖並斷線。
+ * M9: bad-peer blacklist. A seeder that only sends corrupt data makes pieces
+ * fail verification repeatedly; once the strike count reaches the threshold the
+ * peer is banned and disconnected.
  */
 class BadPeerBlacklistTest {
 
     private static final int PIECE_LENGTH = 16384;
 
-    /** 惡意 seeder：宣稱擁有全部 piece，但 Request 一律回覆全 0 的損毀資料。 */
+    /** Malicious seeder: claims to have every piece, but always answers Request with all-zero corrupt data. */
     private static final class MaliciousSeeder implements AutoCloseable {
         private final ServerSocket server;
         private final Metainfo meta;
@@ -74,7 +75,7 @@ class BadPeerBlacklistTest {
                     switch (message) {
                         case PeerMessage.Interested() -> PeerMessage.write(out, new PeerMessage.Unchoke());
                         case PeerMessage.Request(int piece, int begin, int length) ->
-                                PeerMessage.write(out, new PeerMessage.Piece(piece, begin, new byte[length])); // 損毀
+                                PeerMessage.write(out, new PeerMessage.Piece(piece, begin, new byte[length])); // corrupt
                         default -> {
                         }
                     }
@@ -109,13 +110,13 @@ class BadPeerBlacklistTest {
                 DefaultTorrentSession session = (DefaultTorrentSession) leecher.addTorrent(leecherMeta);
                 session.start(DownloadPlan.allFiles(tmp));
 
-                // 反覆收到損毀 piece → 累積 strike → 封鎖
+                // Repeatedly receiving corrupt pieces -> accumulate strikes -> ban
                 long deadline = System.currentTimeMillis() + 20_000;
                 while (session.bannedPeerCount() == 0 && System.currentTimeMillis() < deadline) {
                     Thread.sleep(50);
                 }
-                assertTrue(session.bannedPeerCount() >= 1, "送損毀資料的 peer 應被封鎖");
-                assertFalse(session.state() == SessionState.SEEDING, "不應誤判為下載完成");
+                assertTrue(session.bannedPeerCount() >= 1, "peer sending corrupt data should be banned");
+                assertFalse(session.state() == SessionState.SEEDING, "should not be mistaken for download completion");
             }
         }
     }

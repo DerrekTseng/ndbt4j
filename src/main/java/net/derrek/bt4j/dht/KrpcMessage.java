@@ -7,12 +7,12 @@ import net.derrek.bt4j.bencode.BValue;
 import net.derrek.bt4j.bencode.Bencode;
 
 /**
- * KRPC 訊息（BEP 5）：bencoded 的 query / response / error，
- * 承載 ping、find_node、get_peers、announce_peer 四種 RPC。
+ * KRPC message (BEP 5): bencoded query / response / error,
+ * carrying the four RPCs ping, find_node, get_peers, announce_peer.
  */
 public sealed interface KrpcMessage {
 
-    /** 交易 ID（t 欄位），配對 query 與 response。 */
+    /** Transaction ID (the t field), pairs a query with its response. */
     byte[] transactionId();
 
     record Query(byte[] transactionId, String method, BValue.BDictionary arguments) implements KrpcMessage {
@@ -25,32 +25,32 @@ public sealed interface KrpcMessage {
     }
 
     /**
-     * 解碼 KRPC 封包。
+     * Decode a KRPC packet.
      *
-     * @throws IllegalArgumentException 格式不符（呼叫端應忽略該封包）
+     * @throws IllegalArgumentException on malformed input (the caller should ignore the packet)
      */
     static KrpcMessage decode(byte[] datagram) {
-        // 寬容：部分實作會在訊息後帶多餘位元組，只解第一個值
+        // Lenient: some implementations append extra bytes after the message, so decode only the first value
         if (!(Bencode.decode(datagram, 0).value() instanceof BValue.BDictionary dict)) {
-            throw new IllegalArgumentException("KRPC 頂層必須是 dictionary");
+            throw new IllegalArgumentException("KRPC top level must be a dictionary");
         }
         if (!(dict.get("t").orElse(null) instanceof BValue.BString(byte[] transactionId))) {
-            throw new IllegalArgumentException("缺少交易 id (t)");
+            throw new IllegalArgumentException("missing transaction id (t)");
         }
         if (!(dict.get("y").orElse(null) instanceof BValue.BString y)) {
-            throw new IllegalArgumentException("缺少訊息類型 (y)");
+            throw new IllegalArgumentException("missing message type (y)");
         }
         return switch (y.utf8()) {
             case "q" -> {
                 if (!(dict.get("q").orElse(null) instanceof BValue.BString method)
                         || !(dict.get("a").orElse(null) instanceof BValue.BDictionary args)) {
-                    throw new IllegalArgumentException("query 缺少 q 或 a");
+                    throw new IllegalArgumentException("query missing q or a");
                 }
                 yield new Query(transactionId, method.utf8(), args);
             }
             case "r" -> {
                 if (!(dict.get("r").orElse(null) instanceof BValue.BDictionary values)) {
-                    throw new IllegalArgumentException("response 缺少 r");
+                    throw new IllegalArgumentException("response missing r");
                 }
                 yield new Response(transactionId, values);
             }
@@ -61,9 +61,9 @@ public sealed interface KrpcMessage {
                         && list.values().get(1) instanceof BValue.BString message) {
                     yield new Error(transactionId, (int) code, message.utf8());
                 }
-                throw new IllegalArgumentException("error 缺少 [code, message]");
+                throw new IllegalArgumentException("error missing [code, message]");
             }
-            default -> throw new IllegalArgumentException("未知的訊息類型: " + y.utf8());
+            default -> throw new IllegalArgumentException("unknown message type: " + y.utf8());
         };
     }
 

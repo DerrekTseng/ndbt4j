@@ -12,7 +12,7 @@ import net.derrek.bt4j.metainfo.InfoHash;
 import net.derrek.bt4j.peer.PeerAddress;
 import org.junit.jupiter.api.Test;
 
-/** 三個 DhtClient 組成程序內小型 DHT 網路，驗證 client 端與 server 端雙向邏輯。 */
+/** Three DhtClients form a small in-process DHT network, exercising both client-side and server-side logic. */
 class DhtNetworkTest {
 
     private static InfoHash randomHash() {
@@ -37,10 +37,10 @@ class DhtNetworkTest {
                 assertTrue(finder.awaitBootstrap(Duration.ofSeconds(10)));
 
                 InfoHash hash = randomHash();
-                // announcer 宣告自己在 TCP 7777 提供此 torrent → hub 儲存
+                // announcer declares it serves this torrent on TCP 7777 -> hub stores it
                 announcer.announce(hash, 7777).get(15, TimeUnit.SECONDS);
 
-                // finder 經 hub 找到 announcer
+                // finder locates announcer via hub
                 List<PeerAddress> peers = finder.findPeers(hash).get(15, TimeUnit.SECONDS);
                 assertEquals(1, peers.size());
                 assertEquals("127.0.0.1", peers.getFirst().socketAddress().getAddress().getHostAddress());
@@ -69,13 +69,13 @@ class DhtNetworkTest {
             try (DhtClient node = new DhtClient(0, List.of(local(hub)))) {
                 node.start();
                 assertTrue(node.awaitBootstrap(Duration.ofSeconds(10)));
-                assertTrue(node.routingTableSize() >= 1, "bootstrap 後路由表應含 hub");
-                // hub 收到 node 的查詢後也應記住 node（server 端入表）
+                assertTrue(node.routingTableSize() >= 1, "after bootstrap the routing table should contain hub");
+                // after receiving node's query, hub should also remember node (server-side table insertion)
                 long deadline = System.currentTimeMillis() + 5000;
                 while (hub.routingTableSize() == 0 && System.currentTimeMillis() < deadline) {
                     Thread.sleep(20);
                 }
-                assertTrue(hub.routingTableSize() >= 1, "hub 應從查詢中學到 node");
+                assertTrue(hub.routingTableSize() >= 1, "hub should learn node from the query");
             }
         }
     }

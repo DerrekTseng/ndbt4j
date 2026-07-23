@@ -4,21 +4,23 @@ import net.derrek.bt4j.bencode.BValue;
 import net.derrek.bt4j.peer.PeerConnection;
 
 /**
- * BEP 10 擴充的 SPI。每個擴充（ut_metadata、ut_pex…）實作此介面，
- * 註冊到 {@link ExtensionRegistry}（每條連線一個 registry；擴充實例可跨連線共享）。
- * 回呼皆在連線的讀迴圈 thread 上執行；registry 參數是對該連線的回覆通道。
+ * SPI for BEP 10 extensions. Each extension (ut_metadata, ut_pex, ...) implements this interface and
+ * registers with {@link ExtensionRegistry} (one registry per connection; extension instances may be
+ * shared across connections).
+ * All callbacks run on the connection's read-loop thread; the registry parameter is the reply channel
+ * for that connection.
  */
 public interface Extension {
 
-    /** 擴充名稱，用於 extension handshake 的 m 字典（如 "ut_metadata"）。 */
+    /** The extension name, used in the m dictionary of the extension handshake (e.g. "ut_metadata"). */
     String name();
 
     /**
-     * 對方的 extension handshake 到達（此時 {@link ExtensionRegistry#peerSupports} 已可查詢）。
-     * 可從 handshake 讀取附加欄位（如 metadata_size）。
+     * The peer's extension handshake has arrived (at which point {@link ExtensionRegistry#peerSupports}
+     * can be queried). Additional fields (such as metadata_size) can be read from the handshake.
      */
     void onExtensionHandshake(PeerConnection connection, ExtensionRegistry registry, BValue.BDictionary handshake);
 
-    /** 收到屬於本擴充的訊息（依本端宣告的 id 分派）。 */
+    /** A message belonging to this extension was received (dispatched by the id we advertised). */
     void onMessage(PeerConnection connection, ExtensionRegistry registry, byte[] payload);
 }

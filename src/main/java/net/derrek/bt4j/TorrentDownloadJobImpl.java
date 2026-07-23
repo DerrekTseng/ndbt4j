@@ -7,17 +7,17 @@ import net.derrek.bt4j.metainfo.FileEntry;
 import net.derrek.bt4j.storage.ResumeData;
 
 /**
- * {@link TorrentDownloadJob} 的實作。
- * 新任務（{@link Bt#createDownloadJob}）fromRestore=false；續傳（{@link Bt#restoreDownloadJobs}）fromRestore=true。
+ * Implementation of {@link TorrentDownloadJob}.
+ * New task ({@link Bt#createDownloadJob}) has fromRestore=false; resume ({@link Bt#restoreDownloadJobs}) has fromRestore=true.
  */
 final class TorrentDownloadJobImpl implements TorrentDownloadJob {
 
     final TorrentContentImpl content;
-    final Set<Integer> selectedIndices; // 空集合＝全選
+    final Set<Integer> selectedIndices; // empty set = select all
     final Path targetDir;
     final boolean seedAfter;
     final boolean fromRestore;
-    final ResumeData resumeData; // fromRestore 時非 null
+    final ResumeData resumeData; // non-null when fromRestore
 
     TorrentDownloadJobImpl(TorrentContentImpl content, Set<Integer> selectedIndices, Path targetDir,
                            boolean seedAfter, boolean fromRestore, ResumeData resumeData) {

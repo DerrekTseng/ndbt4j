@@ -9,15 +9,15 @@ import java.util.function.Function;
 import net.derrek.bt4j.peer.PeerAddress;
 
 /**
- * 單一 torrent 的 announce 排程（BEP 12 multitracker）：
- * 每輪依 tier 順序嘗試，tier 內成功者晉升到最前（下輪優先）；
- * 全部失敗以固定間隔重試。started/completed/stopped 事件由生命週期方法觸發。
+ * Announce scheduling for a single torrent (BEP 12 multitracker):
+ * each round tries the tiers in order; within a tier a successful tracker is promoted to the front (preferred next round);
+ * if all fail, retry at a fixed interval. started/completed/stopped events are triggered by the lifecycle methods.
  */
 public final class TrackerManager implements AutoCloseable {
 
     private static final System.Logger LOG = System.getLogger(TrackerManager.class.getName());
 
-    /** tracker 回報 interval 的上限（保持找 peer 的靈敏度）。 */
+    /** Upper bound on the interval reported by the tracker (keeps peer discovery responsive). */
     private static final Duration MAX_INTERVAL = Duration.ofMinutes(5);
     private static final Duration RETRY_DELAY = Duration.ofSeconds(30);
 
@@ -31,9 +31,9 @@ public final class TrackerManager implements AutoCloseable {
     private boolean startedSent;
 
     /**
-     * @param tiers        BEP 12 的 tracker 分層；每層在建構時洗牌一次（BEP 12 規定）
-     * @param requests     依事件產生 announce 參數（由 session 提供目前的統計）
-     * @param onPeersFound 每次 announce 取得的 peer 清單回呼
+     * @param tiers        BEP 12 tracker tiers; each tier is shuffled once at construction (per BEP 12)
+     * @param requests     produces announce parameters per event (the session supplies the current stats)
+     * @param onPeersFound callback for the peer list obtained on each announce
      */
     public TrackerManager(List<List<Tracker>> tiers,
                           Function<AnnounceEvent, AnnounceRequest> requests,
@@ -49,15 +49,15 @@ public final class TrackerManager implements AutoCloseable {
         this.onPeersFound = onPeersFound;
     }
 
-    /** 開始週期 announce（第一次成功的 announce 帶 started）。 */
+    /** Starts periodic announces (the first successful announce carries started). */
     public synchronized void start() {
         if (thread != null) {
-            throw new IllegalStateException("已啟動");
+            throw new IllegalStateException("already started");
         }
         thread = Thread.ofVirtual().name("bt4j-tracker-manager").start(this::loop);
     }
 
-    /** 下載完成：盡快對 tracker 發 completed。 */
+    /** Download complete: send completed to the tracker as soon as possible. */
     public void announceCompleted() {
         completedPending = true;
         Thread t = thread;
@@ -66,7 +66,7 @@ public final class TrackerManager implements AutoCloseable {
         }
     }
 
-    /** 停止排程；已送過 started 的話盡力發 stopped（在排程 thread 上，不阻塞呼叫端）。 */
+    /** Stops the schedule; if started was already sent, makes a best effort to send stopped (on the scheduling thread, without blocking the caller). */
     @Override
     public void close() {
         closed = true;
@@ -93,16 +93,16 @@ public final class TrackerManager implements AutoCloseable {
                         : interval.compareTo(MAX_INTERVAL) > 0 ? MAX_INTERVAL : interval;
                 Thread.sleep(wait.toMillis());
             } catch (InterruptedException e) {
-                // 喚醒原因：completed 待送（回到迴圈頂）或 close（迴圈條件退出）
+                // wakeup reason: completed pending (back to top of loop) or close (loop condition exits)
             }
         }
-        Thread.interrupted(); // 清旗標，避免 stopped announce 被立即中斷
+        Thread.interrupted(); // clear the flag so the stopped announce is not interrupted immediately
         if (startedSent) {
             announceOnce(AnnounceEvent.STOPPED);
         }
     }
 
-    /** 依 tier 順序嘗試一輪。成功回傳 interval 並將該 tracker 晉升至其 tier 最前；全失敗回傳 null。 */
+    /** Tries one round in tier order. On success returns the interval and promotes that tracker to the front of its tier; returns null if all fail. */
     private Duration announceOnce(AnnounceEvent event) {
         for (List<Tracker> tier : tiers) {
             List<Tracker> snapshot;
@@ -114,7 +114,7 @@ public final class TrackerManager implements AutoCloseable {
                     AnnounceResponse response = tracker.announce(requests.apply(event));
                     synchronized (tier) {
                         tier.remove(tracker);
-                        tier.addFirst(tracker); // BEP 12：成功者下輪優先
+                        tier.addFirst(tracker); // BEP 12: a successful tracker is preferred next round
                     }
                     if (!response.peers().isEmpty()) {
                         onPeersFound.accept(response.peers());

@@ -10,9 +10,9 @@ import net.derrek.bt4j.TorrentDownloadJob;
 import net.derrek.bt4j.TorrentDownloadTask;
 
 /**
- * 手動執行的完整下載示範（非單元測試）：以官方 Debian netinst torrent 驗證下載到 100%。
+ * A manually-run full download demo (not a unit test): verifies downloading to 100% using the official Debian netinst torrent.
  *
- * 執行：mvn -q test-compile 後
+ * Run: after mvn -q test-compile
  *   mvn org.codehaus.mojo:exec-maven-plugin:3.1.0:java \
  *       -Dexec.mainClass=net.derrek.bt4j.tools.DebianDownloadRunner \
  *       -Dexec.classpathScope=test \

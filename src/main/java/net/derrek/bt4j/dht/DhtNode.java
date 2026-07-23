@@ -7,10 +7,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/** 路由表中的一個遠端 DHT 節點。 */
+/** A remote DHT node in the routing table. */
 public record DhtNode(NodeId id, InetSocketAddress address) {
 
-    /** compact node info（BEP 5）：每 26 bytes = node id(20) + IPv4(4) + port(2)。 */
+    /** compact node info (BEP 5): every 26 bytes = node id(20) + IPv4(4) + port(2). */
     public static List<DhtNode> fromCompact(byte[] compact) {
         List<DhtNode> result = new ArrayList<>(compact.length / 26);
         for (int i = 0; i + 26 <= compact.length; i += 26) {
@@ -22,13 +22,13 @@ public record DhtNode(NodeId id, InetSocketAddress address) {
                     result.add(new DhtNode(id, new InetSocketAddress(ip, port)));
                 }
             } catch (UnknownHostException e) {
-                throw new AssertionError("固定長度位址不可能失敗", e);
+                throw new AssertionError("a fixed-length address cannot fail", e);
             }
         }
         return result;
     }
 
-    /** 序列化為 compact node info。IPv6 位址略過（BEP 32 未支援）。 */
+    /** Serialize to compact node info. IPv6 addresses are skipped (BEP 32 not supported). */
     public static byte[] toCompact(List<DhtNode> nodes) {
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
         for (DhtNode node : nodes) {

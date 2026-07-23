@@ -4,10 +4,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Kademlia 路由表（BEP 5）：以本機 node id 為中心的 160 個 bucket，
- * 每個 bucket 最多 {@value #K} 個節點。
- * 汰換規則（簡化版）：已存在 → 更新活性；bucket 未滿 → 加入；
- * 滿了 → 取代最久未回應且已逾時（15 分鐘）的節點，否則丟棄新節點。
+ * Kademlia routing table (BEP 5): 160 buckets centered on the local node id,
+ * each bucket holding at most {@value #K} nodes.
+ * Eviction rule (simplified): already present -> refresh liveness; bucket not full -> add;
+ * full -> replace the least-recently-seen node that has gone stale (15 minutes), otherwise drop the new node.
  */
 public final class RoutingTable {
 
@@ -34,11 +34,11 @@ public final class RoutingTable {
         }
     }
 
-    /** 節點回應過查詢時加入或更新（只放「已證明活著」的節點）。 */
+    /** Add or update a node when it has responded to a query (only nodes "proven alive" are stored). */
     public synchronized void insert(DhtNode node) {
         int bucketIndex = NodeId.highestDifferingBit(self, node.id());
         if (bucketIndex < 0) {
-            return; // 自己
+            return; // self
         }
         List<Entry> bucket = buckets.get(bucketIndex);
         long now = System.currentTimeMillis();
@@ -52,7 +52,7 @@ public final class RoutingTable {
             bucket.add(new Entry(node, now));
             return;
         }
-        // 滿了：找一個逾時節點取代
+        // full: find a stale node to replace
         Entry oldest = null;
         for (Entry entry : bucket) {
             if (now - entry.lastSeen > STALE_AFTER_MILLIS && (oldest == null || entry.lastSeen < oldest.lastSeen)) {
@@ -63,10 +63,10 @@ public final class RoutingTable {
             bucket.remove(oldest);
             bucket.add(new Entry(node, now));
         }
-        // 全都新鮮：丟棄新節點（Kademlia 偏好久經考驗的節點）
+        // all fresh: drop the new node (Kademlia prefers long-lived, proven nodes)
     }
 
-    /** 取離 target 最近的 k 個節點，供迭代查詢與 find_node 回應使用。 */
+    /** Get the k nodes closest to target, for iterative lookups and find_node responses. */
     public synchronized List<DhtNode> closest(NodeId target, int k) {
         List<DhtNode> all = new ArrayList<>();
         for (List<Entry> bucket : buckets) {

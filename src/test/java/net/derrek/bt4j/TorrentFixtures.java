@@ -10,17 +10,17 @@ import net.derrek.bt4j.bencode.BValue;
 import net.derrek.bt4j.bencode.Bencode;
 import net.derrek.bt4j.metainfo.Metainfo;
 
-/** 測試用 torrent 產生器：從真實內容計算 piece hash。 */
+/** Torrent generator for tests: computes piece hashes from real content. */
 public final class TorrentFixtures {
 
-    /** 多檔 torrent 的一個檔案：路徑（不含 torrent name）與內容。 */
+    /** A single file within a multi-file torrent: path (excluding the torrent name) and content. */
     public record TestFile(List<String> path, byte[] content) {
     }
 
     private TorrentFixtures() {
     }
 
-    /** 單檔 torrent。 */
+    /** Single-file torrent. */
     public static Metainfo singleFile(String name, byte[] content, int pieceLength, String announce) {
         BValue.BDictionary info = dict(
                 "length", new BValue.BInteger(content.length),
@@ -32,7 +32,7 @@ public final class TorrentFixtures {
                 "info", info)));
     }
 
-    /** 多檔 torrent（piece 跨檔案連續切割）。 */
+    /** Multi-file torrent (pieces are split contiguously across files). */
     public static Metainfo multiFile(String name, List<TestFile> files, int pieceLength, String announce) {
         ByteArrayOutputStream all = new ByteArrayOutputStream();
         List<BValue> fileEntries = new java.util.ArrayList<>();
@@ -52,7 +52,7 @@ public final class TorrentFixtures {
                 "info", info)));
     }
 
-    /** 內容依 pieceLength 切段，逐段 SHA-1。 */
+    /** Splits the content into segments of pieceLength and SHA-1s each segment. */
     public static byte[] pieceHashes(byte[] content, int pieceLength) {
         try {
             MessageDigest sha1 = MessageDigest.getInstance("SHA-1");

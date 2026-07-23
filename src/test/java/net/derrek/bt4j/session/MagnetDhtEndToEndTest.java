@@ -19,8 +19,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * M7 驗收：無 tracker、無 x.pe 的磁力連結，
- * 純靠 DHT（本地小型網路）找到 seeder → BEP 9 取 metadata → 下載完成。
+ * M7 acceptance: a magnet link with no tracker and no x.pe,
+ * relying purely on DHT (a small local network) to find the seeder -> fetch metadata via BEP 9 -> complete the download.
  */
 class MagnetDhtEndToEndTest {
 
@@ -36,13 +36,13 @@ class MagnetDhtEndToEndTest {
             hub.start();
             InetSocketAddress hubAddress = new InetSocketAddress("127.0.0.1", hub.port());
 
-            // seeder 側的 DHT 節點：向 hub 宣告「此 info-hash 的 peer 在 seeder 的 TCP port」
+            // DHT node on the seeder side: announces to the hub that "the peer for this info-hash is at the seeder's TCP port"
             try (DhtClient seederDht = new DhtClient(0, List.of(hubAddress))) {
                 seederDht.start();
                 assertTrue(seederDht.awaitBootstrap(Duration.ofSeconds(10)));
                 seederDht.announce(source.infoHash(), seeder.port()).get(15, TimeUnit.SECONDS);
 
-                // 客戶端：磁力連結只有 info-hash，唯一的 peer 來源是 DHT
+                // Client: the magnet link has only the info-hash, so the only peer source is DHT
                 String magnet = "magnet:?xt=urn:btih:" + source.infoHash().hex();
                 try (BtClient client = BtClient.builder()
                         .listenPort(6896)
@@ -63,7 +63,7 @@ class MagnetDhtEndToEndTest {
                         }
                     });
                     session.start(DownloadPlan.allFiles(tmp));
-                    assertTrue(completed.await(60, TimeUnit.SECONDS), "60 秒內未完成下載");
+                    assertTrue(completed.await(60, TimeUnit.SECONDS), "download did not complete within 60 seconds");
                     assertEquals(SessionState.SEEDING, session.state());
                 }
             }

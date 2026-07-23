@@ -14,12 +14,12 @@ import net.derrek.bt4j.bencode.BValue;
 import net.derrek.bt4j.bencode.Bencode;
 
 /**
- * torrent metadata（BEP 3 的 metainfo）。
- * 來源可以是 .torrent 檔，或磁力連結經 BEP 9 從 peer 取得的 info 字典。
- * 不可變。
+ * Torrent metadata (the metainfo of BEP 3).
+ * The source can be a .torrent file, or the info dictionary obtained from a peer via BEP 9 from a magnet link.
+ * Immutable.
  *
- * info-hash 一律對 info 字典的「原始位元組」計算（保留輸入原貌，不重新編碼），
- * 因此非 canonical 的 .torrent 檔也能得到與其他客戶端一致的 hash。
+ * The info-hash is always computed over the "raw bytes" of the info dictionary (preserving the input as-is, not re-encoding),
+ * so even a non-canonical .torrent file yields a hash consistent with other clients.
  */
 public final class Metainfo {
 
@@ -41,38 +41,38 @@ public final class Metainfo {
         this.announceList = announceList;
 
         if (!(Bencode.decode(infoDictBytes) instanceof BValue.BDictionary info)) {
-            throw new IllegalArgumentException("info 必須是 dictionary");
+            throw new IllegalArgumentException("info must be a dictionary");
         }
         this.name = requireString(info, "name").utf8();
         if (name.isEmpty()) {
-            throw new IllegalArgumentException("info.name 不得為空");
+            throw new IllegalArgumentException("info.name must not be empty");
         }
         this.pieceLength = requireInteger(info, "piece length");
         if (pieceLength <= 0) {
-            throw new IllegalArgumentException("piece length 必須為正數: " + pieceLength);
+            throw new IllegalArgumentException("piece length must be positive: " + pieceLength);
         }
         this.pieces = requireString(info, "pieces").bytes();
         if (pieces.length == 0 || pieces.length % 20 != 0) {
-            throw new IllegalArgumentException("pieces 長度必須是 20 的正倍數: " + pieces.length);
+            throw new IllegalArgumentException("pieces length must be a positive multiple of 20: " + pieces.length);
         }
         this.files = List.copyOf(parseFiles(info));
         this.totalLength = files.stream().mapToLong(FileEntry::length).sum();
         long expectedPieces = (totalLength + pieceLength - 1) / pieceLength;
         if (expectedPieces != pieces.length / 20) {
             throw new IllegalArgumentException(
-                    "piece 數不一致：依檔案總長 " + totalLength + " 應為 " + expectedPieces + "，pieces 欄位有 " + pieces.length / 20);
+                    "piece count mismatch: total file length " + totalLength + " implies " + expectedPieces + ", but the pieces field has " + pieces.length / 20);
         }
         this.isPrivate = info.get("private").orElse(null) instanceof BValue.BInteger(long v) && v == 1;
         LOG.log(System.Logger.Level.TRACE, () -> "parsed metainfo: " + name + " (" + files.size()
                 + " files, " + pieceCount() + " pieces, private=" + isPrivate + ")");
     }
 
-    // ---- 建構 ----
+    // ---- Construction ----
 
-    /** 解析 .torrent 檔內容。 */
+    /** Parse the contents of a .torrent file. */
     public static Metainfo parse(byte[] torrentFileBytes) {
         if (!(Bencode.decode(torrentFileBytes) instanceof BValue.BDictionary outer)) {
-            throw new IllegalArgumentException(".torrent 頂層必須是 dictionary");
+            throw new IllegalArgumentException(".torrent top level must be a dictionary");
         }
         byte[] infoBytes = extractInfoRawBytes(torrentFileBytes);
         return new Metainfo(infoBytes, parseAnnounceList(outer));
@@ -82,24 +82,24 @@ public final class Metainfo {
         try {
             return parse(Files.readAllBytes(torrentFile));
         } catch (IOException e) {
-            throw new UncheckedIOException("讀取 .torrent 檔失敗: " + torrentFile, e);
+            throw new UncheckedIOException("failed to read .torrent file: " + torrentFile, e);
         }
     }
 
     /**
-     * 從 BEP 9 取得的 info 字典原始位元組建立（磁力連結情境）。
-     * 呼叫端須先驗證 SHA-1(infoDictBytes) == 磁力連結的 info-hash。
+     * Build from the raw bytes of an info dictionary obtained via BEP 9 (magnet link scenario).
+     * The caller must first verify that SHA-1(infoDictBytes) == the magnet link's info-hash.
      *
-     * @param trackers 磁力連結 tr= 參數帶的 tracker，作為單一 tier
+     * @param trackers the trackers carried by the magnet link's tr= parameter, as a single tier
      */
     public static Metainfo fromInfoDict(byte[] infoDictBytes, List<URI> trackers) {
         List<List<URI>> tiers = trackers.isEmpty() ? List.of() : List.of(List.copyOf(trackers));
         return new Metainfo(infoDictBytes.clone(), tiers);
     }
 
-    /** 頂層 dict 逐項掃描，取 info 值的原始位元組區段（info-hash 的計算對象）。 */
+    /** Scan the top-level dict entry by entry, taking the raw byte span of the info value (the subject of the info-hash computation). */
     private static byte[] extractInfoRawBytes(byte[] data) {
-        int pos = 1; // 頂層 'd' 之後
+        int pos = 1; // after the top-level 'd'
         while (data[pos] != 'e') {
             Bencode.DecodeResult key = Bencode.decode(data, pos);
             Bencode.DecodeResult value = Bencode.decode(data, key.end());
@@ -108,10 +108,10 @@ public final class Metainfo {
             }
             pos = value.end();
         }
-        throw new IllegalArgumentException(".torrent 缺少 info 字典");
+        throw new IllegalArgumentException(".torrent is missing the info dictionary");
     }
 
-    /** announce-list（BEP 12）優先，否則單一 announce。無法解析的 URI 個別忽略。 */
+    /** announce-list (BEP 12) takes precedence, otherwise a single announce. Unparseable URIs are individually ignored. */
     private static List<List<URI>> parseAnnounceList(BValue.BDictionary outer) {
         if (outer.get("announce-list").orElse(null) instanceof BValue.BList tiers) {
             List<List<URI>> result = new ArrayList<>();
@@ -150,24 +150,24 @@ public final class Metainfo {
     private List<FileEntry> parseFiles(BValue.BDictionary info) {
         List<FileEntry> result = new ArrayList<>();
         if (info.get("files").orElse(null) instanceof BValue.BList fileList) {
-            // 多檔：路徑為 name/子路徑…
+            // multi-file: path is name/subpath...
             long offset = 0;
             for (BValue entryValue : fileList.values()) {
                 if (!(entryValue instanceof BValue.BDictionary entry)) {
-                    throw new IllegalArgumentException("files 內每個項目必須是 dictionary");
+                    throw new IllegalArgumentException("each item in files must be a dictionary");
                 }
                 long length = requireInteger(entry, "length");
                 if (length < 0) {
-                    throw new IllegalArgumentException("檔案長度不得為負: " + length);
+                    throw new IllegalArgumentException("file length must not be negative: " + length);
                 }
                 if (!(entry.get("path").orElse(null) instanceof BValue.BList pathList) || pathList.values().isEmpty()) {
-                    throw new IllegalArgumentException("files 項目缺少 path");
+                    throw new IllegalArgumentException("files item is missing path");
                 }
                 List<String> path = new ArrayList<>();
                 path.add(validatePathComponent(name));
                 for (BValue component : pathList.values()) {
                     if (!(component instanceof BValue.BString s)) {
-                        throw new IllegalArgumentException("path 內每個成分必須是字串");
+                        throw new IllegalArgumentException("each component in path must be a string");
                     }
                     path.add(validatePathComponent(s.utf8()));
                 }
@@ -175,24 +175,24 @@ public final class Metainfo {
                 offset += length;
             }
             if (result.isEmpty()) {
-                throw new IllegalArgumentException("files 清單為空");
+                throw new IllegalArgumentException("files list is empty");
             }
         } else {
-            // 單檔
+            // single file
             long length = requireInteger(info, "length");
             if (length < 0) {
-                throw new IllegalArgumentException("檔案長度不得為負: " + length);
+                throw new IllegalArgumentException("file length must not be negative: " + length);
             }
             result.add(new FileEntry(0, List.of(validatePathComponent(name)), length, 0));
         }
         return result;
     }
 
-    /** 防路徑穿越：path 成分不得為空、"."、".."，或含分隔符號／NUL。 */
+    /** Path-traversal guard: a path component must not be empty, ".", "..", or contain a separator / NUL. */
     private static String validatePathComponent(String component) {
         if (component.isEmpty() || component.equals(".") || component.equals("..")
                 || component.indexOf('/') >= 0 || component.indexOf('\\') >= 0 || component.indexOf('\0') >= 0) {
-            throw new IllegalArgumentException("非法的路徑成分: \"" + component + "\"");
+            throw new IllegalArgumentException("illegal path component: \"" + component + "\"");
         }
         return component;
     }
@@ -201,38 +201,38 @@ public final class Metainfo {
         if (dict.get(key).orElse(null) instanceof BValue.BString s) {
             return s;
         }
-        throw new IllegalArgumentException("缺少或型別錯誤的欄位: " + key);
+        throw new IllegalArgumentException("missing or wrong-typed field: " + key);
     }
 
     private static long requireInteger(BValue.BDictionary dict, String key) {
         if (dict.get(key).orElse(null) instanceof BValue.BInteger(long v)) {
             return v;
         }
-        throw new IllegalArgumentException("缺少或型別錯誤的欄位: " + key);
+        throw new IllegalArgumentException("missing or wrong-typed field: " + key);
     }
 
-    // ---- 存取 ----
+    // ---- Accessors ----
 
     public InfoHash infoHash() {
         return infoHash;
     }
 
-    /** torrent 名稱（info.name）。 */
+    /** Torrent name (info.name). */
     public String name() {
         return name;
     }
 
-    /** 所有檔案，依 torrent 內順序；單檔 torrent 也統一以此表示。 */
+    /** All files, in torrent order; single-file torrents are represented uniformly this way too. */
     public List<FileEntry> files() {
         return files;
     }
 
-    /** 全部檔案長度總和。 */
+    /** Sum of all file lengths. */
     public long totalLength() {
         return totalLength;
     }
 
-    /** 每個 piece 的長度（最後一個 piece 可能較短）。 */
+    /** The length of each piece (the last piece may be shorter). */
     public long pieceLength() {
         return pieceLength;
     }
@@ -241,7 +241,7 @@ public final class Metainfo {
         return pieces.length / 20;
     }
 
-    /** 第 index 個 piece 的實際長度（處理最後一個 piece）。 */
+    /** The actual length of piece number index (handles the last piece). */
     public int pieceLengthAt(int index) {
         java.util.Objects.checkIndex(index, pieceCount());
         if (index == pieceCount() - 1) {
@@ -251,37 +251,37 @@ public final class Metainfo {
         return (int) pieceLength;
     }
 
-    /** 第 index 個 piece 的 SHA-1（20 bytes）。 */
+    /** The SHA-1 (20 bytes) of piece number index. */
     public byte[] pieceHash(int index) {
         java.util.Objects.checkIndex(index, pieceCount());
         return Arrays.copyOfRange(pieces, index * 20, index * 20 + 20);
     }
 
-    /** tracker 分層清單（BEP 12 tiers）。可能為空（純 DHT）。 */
+    /** Tracker tier list (BEP 12 tiers). May be empty (DHT-only). */
     public List<List<URI>> announceList() {
         return announceList;
     }
 
-    /** private flag（BEP 27）。true 時不得使用 DHT / PEX / LSD。 */
+    /** private flag (BEP 27). When true, DHT / PEX / LSD must not be used. */
     public boolean isPrivate() {
         return isPrivate;
     }
 
-    /** info 字典的原始位元組（BEP 9 回應 metadata request 時直接使用）。 */
+    /** The raw bytes of the info dictionary (used directly when responding to a BEP 9 metadata request). */
     public byte[] infoDictBytes() {
         return infoDictBytes.clone();
     }
 
-    // ---- 輸出 ----
+    // ---- Output ----
 
     /**
-     * 序列化為標準 .torrent 檔內容（磁力連結取得 metadata 後可存檔）。
-     * info 區段直接嵌入原始位元組，保證 info-hash 不變。
+     * Serialize to standard .torrent file contents (can be saved after metadata is obtained from a magnet link).
+     * The info section embeds the raw bytes directly, guaranteeing the info-hash is unchanged.
      */
     public byte[] toTorrentBytes() {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         out.write('d');
-        // 頂層 key 需依 bencoding 排序："announce" < "announce-list" < "info"
+        // top-level keys must be bencoding-sorted: "announce" < "announce-list" < "info"
         List<URI> flat = announceList.stream().flatMap(List::stream).toList();
         if (!flat.isEmpty()) {
             writeBString(out, "announce");
@@ -306,7 +306,7 @@ public final class Metainfo {
         try {
             Files.write(target, toTorrentBytes());
         } catch (IOException e) {
-            throw new UncheckedIOException("寫入 .torrent 檔失敗: " + target, e);
+            throw new UncheckedIOException("failed to write .torrent file: " + target, e);
         }
     }
 

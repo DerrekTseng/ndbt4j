@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 
 class InfoHashTest {
 
-    // 使用者提供的測試 hash（doc/TEST-MAGNETS.md 第 1 組）
+    // user-provided test hash (doc/TEST-MAGNETS.md, set 1)
     private static final String HEX = "417999cdf5411a6522abeb34c2059434a69d1854";
     private static final String BASE32 = "IF4ZTTPVIENGKIVL5M2MEBMUGSTJ2GCU";
 
@@ -31,7 +31,7 @@ class InfoHashTest {
 
     @Test
     void sha1KnownVector() {
-        // SHA-1("abc") 的標準測試向量（FIPS 180-2）
+        // standard test vector for SHA-1("abc") (FIPS 180-2)
         assertEquals(InfoHash.fromHex("a9993e364706816aba3e25717850c26c9cd0d89d"),
                 InfoHash.ofInfoDict("abc".getBytes(StandardCharsets.US_ASCII)));
     }
@@ -48,6 +48,6 @@ class InfoHashTest {
         assertThrows(IllegalArgumentException.class, () -> new InfoHash(new byte[19]));
         assertThrows(IllegalArgumentException.class, () -> InfoHash.fromHex("abc"));
         assertThrows(IllegalArgumentException.class, () -> InfoHash.fromBase32("ABC"));
-        assertThrows(IllegalArgumentException.class, () -> InfoHash.fromBase32("1".repeat(32))); // '1' 不在 Base32 字母表
+        assertThrows(IllegalArgumentException.class, () -> InfoHash.fromBase32("1".repeat(32))); // '1' is not in the Base32 alphabet
     }
 }

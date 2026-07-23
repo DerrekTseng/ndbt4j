@@ -1,8 +1,8 @@
 package net.derrek.bt4j.piece;
 
 /**
- * 一個 block 請求（piece 的切片）。對應 wire 的 request/piece/cancel 三元組。
- * length 慣例 16 KiB（BLOCK_SIZE），piece 尾端的 block 可能較短。
+ * A single block request (a slice of a piece). Corresponds to the wire request/piece/cancel triple.
+ * Length is conventionally 16 KiB (BLOCK_SIZE); the block at the end of a piece may be shorter.
  */
 public record BlockRequest(int pieceIndex, int begin, int length) {
 

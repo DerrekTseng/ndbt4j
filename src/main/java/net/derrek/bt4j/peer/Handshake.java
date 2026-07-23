@@ -5,10 +5,10 @@ import java.util.Arrays;
 import net.derrek.bt4j.metainfo.InfoHash;
 
 /**
- * peer wire handshake（BEP 3）：
- * &lt;19&gt;&lt;"BitTorrent protocol"&gt;&lt;reserved 8 bytes&gt;&lt;info-hash 20&gt;&lt;peer-id 20&gt;，共 68 bytes。
- * reserved bits：reserved[5] 的 0x10 = 擴充協定（BEP 10）、
- * reserved[7] 的 0x04 = Fast Extension（BEP 6）、reserved[7] 的 0x01 = DHT（BEP 5 port 訊息）。
+ * peer wire handshake (BEP 3):
+ * &lt;19&gt;&lt;"BitTorrent protocol"&gt;&lt;reserved 8 bytes&gt;&lt;info-hash 20&gt;&lt;peer-id 20&gt;, 68 bytes total.
+ * reserved bits: reserved[5] 0x10 = extension protocol (BEP 10),
+ * reserved[7] 0x04 = Fast Extension (BEP 6), reserved[7] 0x01 = DHT (BEP 5 port message).
  */
 public record Handshake(byte[] reserved, InfoHash infoHash, PeerId peerId) {
 
@@ -18,11 +18,11 @@ public record Handshake(byte[] reserved, InfoHash infoHash, PeerId peerId) {
 
     public Handshake {
         if (reserved.length != 8) {
-            throw new IllegalArgumentException("reserved 必須是 8 bytes");
+            throw new IllegalArgumentException("reserved must be 8 bytes");
         }
     }
 
-    /** 本套件送出的 handshake（依已啟用功能設定 reserved bits）。 */
+    /** Handshake sent by this library (reserved bits set according to enabled features). */
     public static Handshake outgoing(InfoHash infoHash, PeerId peerId, boolean dht, boolean extensions, boolean fast) {
         byte[] reserved = new byte[8];
         if (extensions) {
@@ -61,11 +61,11 @@ public record Handshake(byte[] reserved, InfoHash infoHash, PeerId peerId) {
 
     public static Handshake decode(byte[] data) {
         if (data.length != LENGTH) {
-            throw new IllegalArgumentException("handshake 必須是 " + LENGTH + " bytes，收到 " + data.length);
+            throw new IllegalArgumentException("handshake must be " + LENGTH + " bytes, got " + data.length);
         }
         if (data[0] != PROTOCOL.length
                 || !Arrays.equals(data, 1, 20, PROTOCOL, 0, PROTOCOL.length)) {
-            throw new IllegalArgumentException("不是 BitTorrent protocol handshake");
+            throw new IllegalArgumentException("not a BitTorrent protocol handshake");
         }
         return new Handshake(
                 Arrays.copyOfRange(data, 20, 28),

@@ -3,8 +3,8 @@ package net.derrek.bt4j.piece;
 import java.util.Objects;
 
 /**
- * piece 持有狀態的位元圖（BEP 3 bitfield 訊息的線上格式：MSB 在前，尾端補 0）。
- * 可變；跨執行緒使用時由呼叫端同步。
+ * Bitmap of piece-possession state (BEP 3 bitfield message wire format: MSB first, zero-padded at the end).
+ * Mutable; the caller synchronizes when used across threads.
  */
 public final class Bitfield {
 
@@ -14,7 +14,7 @@ public final class Bitfield {
 
     public Bitfield(int pieceCount) {
         if (pieceCount <= 0) {
-            throw new IllegalArgumentException("piece 數必須為正: " + pieceCount);
+            throw new IllegalArgumentException("piece count must be positive: " + pieceCount);
         }
         this.pieceCount = pieceCount;
         this.bits = new byte[(pieceCount + 7) / 8];
@@ -26,15 +26,15 @@ public final class Bitfield {
         this.cardinality = cardinality;
     }
 
-    /** 從線上格式解析。長度必須恰好，且尾端 padding bit 必須為 0，否則視為協定錯誤。 */
+    /** Parse from wire format. Length must match exactly and trailing padding bits must be 0, otherwise it is treated as a protocol error. */
     public static Bitfield fromBytes(byte[] wireFormat, int pieceCount) {
         int expected = (pieceCount + 7) / 8;
         if (wireFormat.length != expected) {
-            throw new IllegalArgumentException("bitfield 長度應為 " + expected + " bytes，收到 " + wireFormat.length);
+            throw new IllegalArgumentException("bitfield length should be " + expected + " bytes, got " + wireFormat.length);
         }
         int paddingBits = expected * 8 - pieceCount;
         if (paddingBits > 0 && (wireFormat[expected - 1] & ((1 << paddingBits) - 1)) != 0) {
-            throw new IllegalArgumentException("bitfield 尾端 padding bit 必須為 0");
+            throw new IllegalArgumentException("bitfield trailing padding bits must be 0");
         }
         int cardinality = 0;
         for (byte b : wireFormat) {
@@ -62,7 +62,7 @@ public final class Bitfield {
         }
     }
 
-    /** 已設定的 piece 數。 */
+    /** Number of pieces set. */
     public int cardinality() {
         return cardinality;
     }
@@ -75,7 +75,7 @@ public final class Bitfield {
         return cardinality == pieceCount;
     }
 
-    /** 序列化為線上格式。 */
+    /** Serialize to wire format. */
     public byte[] toBytes() {
         return bits.clone();
     }

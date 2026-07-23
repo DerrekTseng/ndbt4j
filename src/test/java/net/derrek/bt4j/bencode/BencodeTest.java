@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 
 class BencodeTest {
 
-    /** ISO-8859-1 保證 0-255 每個 byte 值原樣對映，適合建構含二進位內容的測試資料。 */
+    /** ISO-8859-1 maps every byte value 0-255 one-to-one, ideal for constructing test data with binary content. */
     private static byte[] raw(String s) {
         return s.getBytes(StandardCharsets.ISO_8859_1);
     }
@@ -53,7 +53,7 @@ class BencodeTest {
             assertThrows(BencodeException.class, () -> decode("i-0e"));
             assertThrows(BencodeException.class, () -> decode("i1a2e"));
             assertThrows(BencodeException.class, () -> decode("i42"));
-            assertThrows(BencodeException.class, () -> decode("i9223372036854775808e")); // long 溢位
+            assertThrows(BencodeException.class, () -> decode("i9223372036854775808e")); // long overflow
         }
     }
 
@@ -76,10 +76,10 @@ class BencodeTest {
 
         @Test
         void rejectMalformed() {
-            assertThrows(BencodeException.class, () -> decode("03:abc"));  // 長度前導零
-            assertThrows(BencodeException.class, () -> decode("5:ab"));    // 長度超過剩餘資料
-            assertThrows(BencodeException.class, () -> decode("4spam"));   // 缺冒號
-            assertThrows(BencodeException.class, () -> decode("4:"));      // 內容不足
+            assertThrows(BencodeException.class, () -> decode("03:abc"));  // leading zero in length
+            assertThrows(BencodeException.class, () -> decode("5:ab"));    // length exceeds remaining data
+            assertThrows(BencodeException.class, () -> decode("4spam"));   // missing colon
+            assertThrows(BencodeException.class, () -> decode("4:"));      // insufficient content
         }
     }
 
@@ -130,10 +130,10 @@ class BencodeTest {
 
         @Test
         void rejectMalformed() {
-            assertThrows(BencodeException.class, () -> decode("d1:ai1e1:ai2ee")); // 重複 key
-            assertThrows(BencodeException.class, () -> decode("di1e1:ae"));       // 非字串 key
-            assertThrows(BencodeException.class, () -> decode("d3:cow"));         // 截斷
-            assertThrows(BencodeException.class, () -> decode("d3:cowe"));        // 有 key 沒 value
+            assertThrows(BencodeException.class, () -> decode("d1:ai1e1:ai2ee")); // duplicate key
+            assertThrows(BencodeException.class, () -> decode("di1e1:ae"));       // non-string key
+            assertThrows(BencodeException.class, () -> decode("d3:cow"));         // truncated
+            assertThrows(BencodeException.class, () -> decode("d3:cowe"));        // key without value
         }
     }
 
@@ -157,7 +157,7 @@ class BencodeTest {
         void deepNestingThrowsInsteadOfStackOverflow() {
             String bomb = "l".repeat(Bencode.MAX_DEPTH + 10);
             BencodeException e = assertThrows(BencodeException.class, () -> decode(bomb));
-            assertTrue(e.getMessage().contains("深度"));
+            assertTrue(e.getMessage().contains("depth"));
         }
     }
 
@@ -180,9 +180,9 @@ class BencodeTest {
 
         @Test
         void infoDictRawSpanExtraction() {
-            // 模擬 .torrent：外層 dict 內含 info dict，擷取其原始位元組後可獨立重解
+            // simulate a .torrent: an outer dict containing an info dict; after extracting its raw bytes it can be re-decoded independently
             byte[] data = raw("d4:infod3:foo3:baree");
-            int infoStart = 7; // "d4:info" 之後
+            int infoStart = 7; // after "d4:info"
             Bencode.DecodeResult info = Bencode.decode(data, infoStart);
             assertInstanceOf(BValue.BDictionary.class, info.value());
             assertEquals(19, info.end());
@@ -203,7 +203,7 @@ class BencodeTest {
 
         @Test
         void canonicalRoundTrip() {
-            // canonical 輸入：decode 後 encode 必須位元組相同
+            // canonical input: after decode then encode the bytes must be identical
             for (String canonical : List.of(
                     "i0e", "i-42e", "0:", "4:spam", "le", "de",
                     "l4:spami42ee",
@@ -223,7 +223,7 @@ class BencodeTest {
 
         @Test
         void dictKeySortIsUnsignedByteOrder() {
-            // 0xFF 無號比較大於 'a'；若誤用有號比較 0xFF(-1) 會排在前面
+            // 0xFF is greater than 'a' under unsigned comparison; with a mistaken signed comparison 0xFF(-1) would sort first
             SequencedMap<BValue.BString, BValue> entries = new LinkedHashMap<>();
             entries.put(new BValue.BString(new byte[] {(byte) 0xFF}), new BValue.BInteger(2));
             entries.put(BValue.BString.of("a"), new BValue.BInteger(1));

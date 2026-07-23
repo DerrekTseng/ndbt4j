@@ -16,17 +16,17 @@ import net.derrek.bt4j.peer.PeerAddress;
 import net.derrek.bt4j.peer.PeerConnection;
 
 /**
- * ut_pex（BEP 11）：與已連線 peer 定期交換 peer 清單（added/dropped，compact 格式）。
- * 每條連線一個實例（狀態：上次送給該 peer 的集合）。週期不得短於 60 秒。
- * private torrent（BEP 27）時不得建立此擴充。
+ * ut_pex (BEP 11): periodically exchanges peer lists (added/dropped, compact format) with connected peers.
+ * One instance per connection (state: the set last sent to that peer). The period must not be shorter than 60 seconds.
+ * This extension must not be created for private torrents (BEP 27).
  */
 public final class PeerExchange implements Extension {
 
     private static final System.Logger LOG = System.getLogger(PeerExchange.class.getName());
 
-    /** BEP 11 規定的最小交換週期。 */
+    /** The minimum exchange interval required by BEP 11. */
     static final long MIN_INTERVAL_NANOS = 60_000_000_000L;
-    /** 單次訊息最多攜帶的 peer 數（避免封包過大）。 */
+    /** The maximum number of peers carried in a single message (to avoid oversized packets). */
     static final int MAX_PER_MESSAGE = 50;
 
     private final Supplier<Set<PeerAddress>> currentPeers;
@@ -37,8 +37,8 @@ public final class PeerExchange implements Extension {
     private boolean everSent;
 
     /**
-     * @param currentPeers      目前 session 已連線的 peer 位址（快照來源）
-     * @param onPeersDiscovered 從對方 PEX 訊息學到的新 peer
+     * @param currentPeers      the addresses of peers currently connected in the session (snapshot source)
+     * @param onPeersDiscovered new peers learned from the peer's PEX messages
      */
     public PeerExchange(Supplier<Set<PeerAddress>> currentPeers, Consumer<List<PeerAddress>> onPeersDiscovered) {
         this.currentPeers = currentPeers;
@@ -53,7 +53,7 @@ public final class PeerExchange implements Extension {
     @Override
     public void onExtensionHandshake(PeerConnection connection, ExtensionRegistry registry,
                                      BValue.BDictionary handshake) {
-        // 首次交換由 session 的週期 tick 觸發，這裡不主動送。
+        // the first exchange is triggered by the session's periodic tick; do not send here.
     }
 
     @Override
@@ -84,12 +84,12 @@ public final class PeerExchange implements Extension {
             LOG.log(System.Logger.Level.TRACE, () -> "PEX from " + connection.address() + " added " + discovered.size() + " peers");
             onPeersDiscovered.accept(discovered);
         }
-        // dropped/dropped6 忽略：我們不因 PEX 主動斷線。
+        // dropped/dropped6 ignored: we do not proactively disconnect because of PEX.
     }
 
     /**
-     * 由 session 週期呼叫（≥60 秒一次）：對此 peer 送出自上次以來的 added/dropped 差異。
-     * 對方未宣告支援 ut_pex 時不做事。
+     * Called periodically by the session (at most once per >=60 seconds): sends this peer the added/dropped
+     * delta since the last time. Does nothing if the peer has not advertised support for ut_pex.
      */
     public void tick(PeerConnection connection, ExtensionRegistry registry) {
         if (!registry.peerSupports(name())) {
@@ -103,7 +103,7 @@ public final class PeerExchange implements Extension {
         List<PeerAddress> added = current.stream().filter(p -> !lastSent.contains(p)).limit(MAX_PER_MESSAGE).toList();
         List<PeerAddress> dropped = lastSent.stream().filter(p -> !current.contains(p)).limit(MAX_PER_MESSAGE).toList();
         if (everSent && added.isEmpty() && dropped.isEmpty()) {
-            return; // 沒有變化就不送（首次即使為空也送一次以表態）
+            return; // nothing changed, do not send (the first time is sent once even if empty, as an announcement)
         }
         byte[] message = build(added, dropped);
         if (registry.send(connection, name(), message)) {
@@ -120,7 +120,7 @@ public final class PeerExchange implements Extension {
         List<PeerAddress> added6 = ipv6(added);
         SequencedMap<BValue.BString, BValue> map = new LinkedHashMap<>();
         map.put(BValue.BString.of("added"), new BValue.BString(compact4(added4)));
-        map.put(BValue.BString.of("added.f"), new BValue.BString(new byte[added4.size()])); // 每 peer 一旗標位元組（0）
+        map.put(BValue.BString.of("added.f"), new BValue.BString(new byte[added4.size()])); // one flag byte per peer (0)
         if (!added6.isEmpty()) {
             map.put(BValue.BString.of("added6"), new BValue.BString(compact6(added6)));
         }

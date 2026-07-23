@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 
 class RarestFirstPickerTest {
 
-    /** 3 pieces（16384 × 2 + 7232 = 40000）。 */
+    /** 3 pieces (16384 x 2 + 7232 = 40000). */
     private static Metainfo meta() {
         return TorrentFixtures.singleFile("p.bin", TorrentFixtures.randomBytes(40000, 7),
                 16384, "http://t.example.com/announce");
@@ -34,17 +34,17 @@ class RarestFirstPickerTest {
         Metainfo meta = meta();
         RarestFirstPicker picker = picker(meta);
 
-        // 兩個 peer 有全部，一個 peer 只有 piece 2 → piece 0/1 availability=2、piece 2=3
+        // two peers have everything, one peer has only piece 2 -> piece 0/1 availability=2, piece 2=3
         picker.onPeerBitfield(full(3));
         picker.onPeerBitfield(full(3));
         Bitfield onlyPiece2 = new Bitfield(3);
         onlyPiece2.set(2);
         picker.onPeerBitfield(onlyPiece2);
 
-        // 向持有全部的 peer 要 1 個 block → 應從最稀有的 piece 0 或 1 開始（availability 2 < 3）
+        // request 1 block from the peer that has everything -> should start from the rarest piece 0 or 1 (availability 2 < 3)
         List<BlockRequest> picked = picker.pick(full(3), 1);
         assertEquals(1, picked.size());
-        assertTrue(picked.getFirst().pieceIndex() != 2, "應優先挑稀有 piece，實際: " + picked);
+        assertTrue(picked.getFirst().pieceIndex() != 2, "should pick the rarer piece first, actual: " + picked);
     }
 
     @Test
@@ -54,12 +54,12 @@ class RarestFirstPickerTest {
         picker.onPeerBitfield(full(3));
 
         List<BlockRequest> all = picker.pick(full(3), 100);
-        // 16384×2 個整 block + 最後 piece 7232 → 每 piece 1 block（pieceLength=16384=1 block）
+        // two full 16384 blocks + a final 7232 piece -> 1 block per piece (pieceLength=16384=1 block)
         long total = all.stream().mapToLong(BlockRequest::length).sum();
         assertEquals(40000, total);
-        // 同一 block 不會重複派發
+        // the same block is not dispatched twice
         assertEquals(all.size(), all.stream().distinct().count());
-        // 再要一次 → 空（全部已派發，且未進 endgame 條件下不重複）
+        // request again -> empty (all dispatched, and not re-issued unless in endgame)
         assertTrue(picker.pick(full(3), 100).isEmpty() || picker.isEndgame());
     }
 
@@ -89,15 +89,15 @@ class RarestFirstPickerTest {
         List<BlockRequest> all = picker.pick(full(3), 100);
         BlockRequest first = all.getFirst();
         var complete = picker.onBlockReceived(first);
-        // piece 0 只有一個 block（16384）→ 立刻組完
+        // piece 0 has only one block (16384) -> assembled immediately
         assertEquals(first.pieceIndex(), complete.orElseThrow());
-        picker.onPieceVerified(first.pieceIndex(), false); // 驗證失敗
+        picker.onPieceVerified(first.pieceIndex(), false); // verification failed
 
         assertFalse(picker.isComplete());
-        // 該 piece 的 block 應可重新取得
+        // the blocks of that piece should be pickable again
         List<BlockRequest> again = picker.pick(full(3), 100);
         assertTrue(again.stream().anyMatch(b -> b.pieceIndex() == first.pieceIndex()),
-                "驗證失敗的 piece 應重新排入: " + again);
+                "a piece that failed verification should be re-queued: " + again);
     }
 
     @Test
@@ -109,7 +109,7 @@ class RarestFirstPickerTest {
         List<BlockRequest> all = picker.pick(full(3), 100);
         assertTrue(picker.pick(full(3), 100).isEmpty() || picker.isEndgame());
 
-        picker.onRequestsAbandoned(all); // peer 斷線
+        picker.onRequestsAbandoned(all); // peer disconnected
         List<BlockRequest> again = picker.pick(full(3), 100);
         assertEquals(all.size(), again.size());
     }
@@ -120,9 +120,9 @@ class RarestFirstPickerTest {
         RarestFirstPicker picker = picker(meta);
         picker.onPeerBitfield(full(3));
 
-        List<BlockRequest> all = picker.pick(full(3), 100); // 全部派給 peer A
+        List<BlockRequest> all = picker.pick(full(3), 100); // all dispatched to peer A
         assertTrue(picker.isEndgame());
-        // peer B 在 endgame 應拿到重複的未到貨 block
+        // in endgame peer B should get the duplicate not-yet-delivered blocks
         List<BlockRequest> dup = picker.pick(full(3), 100);
         assertEquals(all.size(), dup.size());
     }
@@ -135,7 +135,7 @@ class RarestFirstPickerTest {
         List<BlockRequest> blocks = picker.pickFromPiece(1, 100);
         assertFalse(blocks.isEmpty());
         assertTrue(blocks.stream().allMatch(b -> b.pieceIndex() == 1));
-        // 重複呼叫不再回同一 block（已標記 requested）
+        // calling again does not return the same block (already marked requested)
         assertTrue(picker.pickFromPiece(1, 100).isEmpty());
     }
 
@@ -143,13 +143,13 @@ class RarestFirstPickerTest {
     void pickFromPieceRejectsCompletedOrOutOfRange() {
         Metainfo meta = meta();
         RarestFirstPicker picker = picker(meta);
-        // 先完成 piece 0
+        // first complete piece 0
         picker.onPeerBitfield(full(3));
         for (BlockRequest b : picker.pickFromPiece(0, 100)) {
             picker.onBlockReceived(b).ifPresent(p -> picker.onPieceVerified(p, true));
         }
-        assertTrue(picker.pickFromPiece(0, 100).isEmpty(), "已完成的 piece 不再挑");
-        assertTrue(picker.pickFromPiece(99, 100).isEmpty(), "超範圍回空");
+        assertTrue(picker.pickFromPiece(0, 100).isEmpty(), "a completed piece is no longer picked");
+        assertTrue(picker.pickFromPiece(99, 100).isEmpty(), "out of range returns empty");
     }
 
     @Test
@@ -159,7 +159,7 @@ class RarestFirstPickerTest {
         Bitfield peerHad = full(3);
         picker.onPeerBitfield(peerHad);
         picker.onPeerGone(peerHad);
-        // availability 歸零後仍可挑（availability 只影響順序不影響可挑性）
+        // still pickable after availability drops to zero (availability affects only ordering, not pickability)
         assertFalse(picker.pick(full(3), 1).isEmpty());
     }
 }

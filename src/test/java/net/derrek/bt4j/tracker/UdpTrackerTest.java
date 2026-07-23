@@ -24,13 +24,13 @@ class UdpTrackerTest {
 
     private FakeUdpTracker fake;
 
-    /** 假 UDP tracker：依 BEP 15 回應 connect / announce，行為可設定。 */
+    /** Fake UDP tracker: responds to connect / announce per BEP 15, with configurable behavior. */
     private final class FakeUdpTracker implements AutoCloseable {
 
         final DatagramSocket socket = new DatagramSocket();
         final AtomicInteger announcesReceived = new AtomicInteger();
-        volatile int dropFirstN;           // 忽略前 N 個封包（測重送）
-        volatile String errorMessage;      // 非 null 時 announce 回 error
+        volatile int dropFirstN;           // ignore the first N packets (to test retransmission)
+        volatile String errorMessage;      // when non-null, announce returns an error
         volatile int lastEventCode = -1;
 
         FakeUdpTracker() throws IOException {
@@ -134,7 +134,7 @@ class UdpTrackerTest {
     @Test
     void retransmitsAfterTimeout() throws Exception {
         fake = new FakeUdpTracker();
-        fake.dropFirstN = 1; // 第一個 connect 被吃掉
+        fake.dropFirstN = 1; // the first connect is swallowed
         UdpTracker tracker = new UdpTracker(fake.uri(), new int[] {300, 2000});
 
         AnnounceResponse response = tracker.announce(request(AnnounceEvent.STARTED));

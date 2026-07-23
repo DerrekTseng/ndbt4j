@@ -12,12 +12,13 @@ import net.derrek.bt4j.peer.PeerConnection;
 import net.derrek.bt4j.peer.PeerMessage;
 
 /**
- * BEP 10 擴充協定框架（每條 PeerConnection 一個實例）：
- * 產生／解析 extension handshake（extended id=0 的 bencoded 字典）、
- * 維護雙向 name ↔ id 對映、分派 Extended 訊息給註冊的 {@link Extension}。
+ * BEP 10 extension protocol framework (one instance per PeerConnection):
+ * builds/parses the extension handshake (the bencoded dictionary of extended id=0),
+ * maintains the bidirectional name &lt;-&gt; id mapping, and dispatches Extended messages to the
+ * registered {@link Extension}s.
  *
- * id 語意（BEP 10）：雙方各自在 m 字典宣告「請用這個 id 送給我」——
- * 收訊息時用本端宣告的 id 查表；送訊息時用對方宣告的 id。
+ * id semantics (BEP 10): each side declares "send this to me with this id" in its m dictionary --
+ * when receiving a message, look it up by the id we advertised; when sending, use the id the peer advertised.
  */
 public final class ExtensionRegistry {
 
@@ -36,7 +37,7 @@ public final class ExtensionRegistry {
         }
     }
 
-    /** 產生本端 extension handshake（雙方 reserved bit 支援時，handshake 完成後立即送出）。 */
+    /** Builds our extension handshake (sent immediately after the handshake completes, when both sides support the reserved bit). */
     public PeerMessage.Extended buildHandshake(Integer metadataSize) {
         SequencedMap<BValue.BString, BValue> m = new LinkedHashMap<>();
         for (Map.Entry<Integer, Extension> entry : byLocalId.entrySet()) {
@@ -51,7 +52,7 @@ public final class ExtensionRegistry {
         return new PeerMessage.Extended(0, Bencode.encode(new BValue.BDictionary(dict)));
     }
 
-    /** 處理收到的 Extended 訊息：id=0 為 handshake，其餘依本端宣告的 id 分派。格式錯誤靜默忽略。 */
+    /** Handles a received Extended message: id=0 is the handshake, the rest are dispatched by the id we advertised. Malformed messages are silently ignored. */
     public void dispatch(PeerConnection connection, PeerMessage.Extended message) {
         if (message.extendedId() == 0) {
             handleHandshake(connection, message.payload());
@@ -80,7 +81,7 @@ public final class ExtensionRegistry {
                     if (id > 0) {
                         theirIds.put(name, (int) id);
                     } else {
-                        theirIds.remove(name); // BEP 10：id=0 表示停用
+                        theirIds.remove(name); // BEP 10: id=0 means disabled
                     }
                 }
             }
@@ -91,12 +92,12 @@ public final class ExtensionRegistry {
         }
     }
 
-    /** 對方是否宣告支援某擴充（extension handshake 到達後有效）。 */
+    /** Whether the peer advertised support for a given extension (valid after the extension handshake arrives). */
     public boolean peerSupports(String extensionName) {
         return theirIds.containsKey(extensionName);
     }
 
-    /** 以擴充名稱送訊息（自動換成對方宣告的 id）。對方不支援時回傳 false。 */
+    /** Sends a message by extension name (automatically translated to the id the peer advertised). Returns false if the peer does not support it. */
     public boolean send(PeerConnection connection, String extensionName, byte[] payload) {
         Integer theirId = theirIds.get(extensionName);
         if (theirId == null) {

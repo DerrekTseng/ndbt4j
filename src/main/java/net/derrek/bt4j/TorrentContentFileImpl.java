@@ -2,7 +2,7 @@ package net.derrek.bt4j;
 
 import net.derrek.bt4j.metainfo.FileEntry;
 
-/** {@link TorrentContentFile} 的實作，包裝 {@link FileEntry} 並記住所屬 content。 */
+/** Implementation of {@link TorrentContentFile}, wrapping a {@link FileEntry} and remembering its owning content. */
 final class TorrentContentFileImpl implements TorrentContentFile {
 
     private final TorrentContentImpl content;

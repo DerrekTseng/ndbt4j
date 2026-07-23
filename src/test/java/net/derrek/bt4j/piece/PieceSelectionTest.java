@@ -14,11 +14,11 @@ import org.junit.jupiter.api.Test;
 class PieceSelectionTest {
 
     /**
-     * 佈局（pieceLength=16384）：
-     * a.bin: [0, 20000)          → piece 0, 1
-     * b.bin: [20000, 40000)      → piece 1, 2（與 a、c 共用邊界 piece）
-     * c.bin: [40000, 50000)      → piece 2, 3
-     * 總長 50000 → 4 pieces（最後一個 962 bytes）
+     * Layout (pieceLength=16384):
+     * a.bin: [0, 20000)          -> piece 0, 1
+     * b.bin: [20000, 40000)      -> piece 1, 2 (shares boundary pieces with a and c)
+     * c.bin: [40000, 50000)      -> piece 2, 3
+     * Total length 50000 -> 4 pieces (the last one 962 bytes)
      */
     private static Metainfo layout() {
         return TorrentFixtures.multiFile("sel", List.of(
@@ -39,18 +39,18 @@ class PieceSelectionTest {
 
     @Test
     void middleFileSelectsBoundaryPieces() {
-        PieceSelection selection = PieceSelection.of(layout(), Set.of(1)); // 只勾 b.bin
+        PieceSelection selection = PieceSelection.of(layout(), Set.of(1)); // select only b.bin
         assertEquals(20000, selection.wantedBytes());
         assertFalse(selection.isWanted(0));
-        assertTrue(selection.isWanted(1));  // 邊界：含 a 尾端
-        assertTrue(selection.isWanted(2));  // 邊界：含 c 頭端
+        assertTrue(selection.isWanted(1));  // boundary: includes the tail of a
+        assertTrue(selection.isWanted(2));  // boundary: includes the head of c
         assertFalse(selection.isWanted(3));
         assertFalse(selection.isFileWanted(0));
         assertTrue(selection.isFileWanted(1));
 
-        // piece 1 = [16384, 32768)，b 佔 [20000, 32768) = 12768 bytes
+        // piece 1 = [16384, 32768), b occupies [20000, 32768) = 12768 bytes
         assertEquals(12768, selection.wantedBytesInPiece(1));
-        // piece 2 = [32768, 49152)，b 佔 [32768, 40000) = 7232 bytes
+        // piece 2 = [32768, 49152), b occupies [32768, 40000) = 7232 bytes
         assertEquals(7232, selection.wantedBytesInPiece(2));
         assertEquals(0, selection.wantedBytesInPiece(0));
         assertEquals(20000, selection.wantedBytesInPiece(1) + selection.wantedBytesInPiece(2));
@@ -58,7 +58,7 @@ class PieceSelectionTest {
 
     @Test
     void lastFileIncludesFinalShortPiece() {
-        PieceSelection selection = PieceSelection.of(layout(), Set.of(2)); // 只勾 c.bin
+        PieceSelection selection = PieceSelection.of(layout(), Set.of(2)); // select only c.bin
         assertFalse(selection.isWanted(0));
         assertFalse(selection.isWanted(1));
         assertTrue(selection.isWanted(2));

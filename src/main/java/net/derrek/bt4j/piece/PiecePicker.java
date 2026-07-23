@@ -4,30 +4,30 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * block 排程策略：決定接下來向哪個 peer 要哪個 block。
- * 預設實作為 rarest-first（見 {@link RarestFirstPicker}）。
- * 實作必須是執行緒安全的（多條 peer 讀迴圈同時呼叫）。
+ * Block scheduling strategy: decides which block to request from which peer next.
+ * The default implementation is rarest-first (see {@link RarestFirstPicker}).
+ * Implementations must be thread-safe (called concurrently by multiple peer read loops).
  */
 public interface PiecePicker {
 
     /**
-     * 為某個 peer 挑選接下來要送出的 request。
+     * Pick the next requests to send to a given peer.
      *
-     * @param peerHas    該 peer 持有的 piece
-     * @param maxBlocks  最多回傳幾個（依 pipeline 深度，慣例每連線 5~10 個 outstanding）
-     * @return 可請求的 block；無事可做（該 peer 沒有我們要的 piece）時為空
+     * @param peerHas    the pieces this peer holds
+     * @param maxBlocks  the maximum number to return (based on pipeline depth, conventionally 5~10 outstanding per connection)
+     * @return requestable blocks; empty when there is nothing to do (the peer has none of the pieces we want)
      */
     List<BlockRequest> pick(Bitfield peerHas, int maxBlocks);
 
-    /** 收到 block。回傳 Optional 有值時表示該 piece 已組完，應交給 storage 驗證。 */
+    /** A block was received. A present Optional means the piece is fully assembled and should be handed to storage for verification. */
     Optional<Integer> onBlockReceived(BlockRequest block);
 
-    /** piece 驗證結果回報：失敗時該 piece 全部 block 重新排入。 */
+    /** Report of a piece verification result: on failure all blocks of the piece are re-queued. */
     void onPieceVerified(int pieceIndex, boolean valid);
 
-    /** peer 斷線：其未完成的 request 重新排入。 */
+    /** Peer disconnected: its outstanding requests are re-queued. */
     void onRequestsAbandoned(List<BlockRequest> outstanding);
 
-    /** 剩餘需求 block 數低於門檻時進入 endgame：同一 block 可重複派發給多個 peer。 */
+    /** Enters endgame when the number of remaining needed blocks falls below the threshold: the same block may be dispatched to multiple peers. */
     boolean isEndgame();
 }

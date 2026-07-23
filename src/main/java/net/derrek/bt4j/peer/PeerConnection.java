@@ -17,12 +17,13 @@ import net.derrek.bt4j.metainfo.InfoHash;
 import net.derrek.bt4j.piece.Bitfield;
 
 /**
- * 一條 peer TCP 連線的生命週期：handshake、訊息編解碼、四態旗標
- * （am_choking / am_interested / peer_choking / peer_interested）。
+ * The lifecycle of a single peer TCP connection: handshake, message encode/decode, and the four
+ * state flags (am_choking / am_interested / peer_choking / peer_interested).
  *
- * 執行緒模型：每條連線兩條 virtual thread——讀迴圈（依序處理訊息並回呼 listener）
- * 與寫佇列（閒置 {@value #KEEP_ALIVE_IDLE_SECONDS} 秒自動送 keep-alive）。
- * {@link Listener} 回呼一律在讀迴圈 thread 上執行。
+ * Threading model: two virtual threads per connection -- a read loop (processes messages in order
+ * and invokes the listener) and a write queue (sends a keep-alive automatically after
+ * {@value #KEEP_ALIVE_IDLE_SECONDS} idle seconds).
+ * {@link Listener} callbacks always run on the read-loop thread.
  */
 public final class PeerConnection implements AutoCloseable {
 
@@ -32,14 +33,14 @@ public final class PeerConnection implements AutoCloseable {
     private static final int READ_TIMEOUT_MILLIS = 150_000;
     private static final int KEEP_ALIVE_IDLE_SECONDS = 110;
 
-    /** 連線事件回呼。由讀迴圈 thread 呼叫，實作不可長時間阻塞。 */
+    /** Connection event callbacks. Invoked on the read-loop thread; implementations must not block for long. */
     public interface Listener {
 
         void onHandshakeCompleted(PeerConnection connection, Handshake theirs);
 
         void onMessage(PeerConnection connection, PeerMessage message);
 
-        /** 連線關閉（正常或錯誤）。error 為 null 表示正常關閉。 */
+        /** Connection closed (normally or with an error). A null error means a normal close. */
         void onClosed(PeerConnection connection, IOException error);
     }
 
@@ -52,7 +53,7 @@ public final class PeerConnection implements AutoCloseable {
     private final BlockingQueue<PeerMessage> sendQueue = new LinkedBlockingQueue<>();
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    /** 連入連線：預先接受的 socket 與已讀出的對方 handshake（outgoing 時皆為 null）。 */
+    /** Incoming connection: the pre-accepted socket and the peer's already-read handshake (both null for outgoing). */
     private final Socket incomingSocket;
     private final Handshake incomingHandshake;
 
@@ -63,7 +64,7 @@ public final class PeerConnection implements AutoCloseable {
     private volatile boolean peerChoking = true;
     private volatile boolean peerInterested = false;
     private volatile Handshake theirHandshake;
-    private Bitfield peerBitfield; // 只在讀迴圈 thread 寫入
+    private Bitfield peerBitfield; // written only on the read-loop thread
 
     private PeerConnection(PeerAddress address, InfoHash infoHash, PeerId localId, int pieceCount,
                            boolean advertiseDht, Socket incomingSocket, Handshake incomingHandshake,
@@ -76,19 +77,20 @@ public final class PeerConnection implements AutoCloseable {
         this.incomingSocket = incomingSocket;
         this.incomingHandshake = incomingHandshake;
         this.listener = listener;
-        // pieceCount <= 0：magnet 情境 metadata 未知，先給最小 bitfield（bitfield 訊息到達時取代）
+        // pieceCount <= 0: magnet case, metadata unknown; start with a minimal bitfield (replaced when the bitfield message arrives)
         this.peerBitfield = new Bitfield(Math.max(1, pieceCount));
     }
 
-    /** 主動連出。建構後呼叫 {@link #start()} 才開始 IO。 */
+    /** Active outgoing connection. IO begins only after calling {@link #start()} post-construction. */
     public static PeerConnection outgoing(PeerAddress address, InfoHash infoHash, PeerId localId,
                                           int pieceCount, boolean advertiseDht, Listener listener) {
         return new PeerConnection(address, infoHash, localId, pieceCount, advertiseDht, null, null, listener);
     }
 
     /**
-     * 被動連入：呼叫端（BtClient）已 accept socket 並讀出對方 handshake 以決定所屬 torrent。
-     * 本連線負責回送我方 handshake 並進入訊息迴圈。
+     * Passive incoming connection: the caller (BtClient) has already accepted the socket and read the
+     * peer's handshake to determine which torrent it belongs to.
+     * This connection is responsible for sending back our handshake and entering the message loop.
      */
     public static PeerConnection incoming(Socket socket, Handshake theirHandshake, InfoHash infoHash,
                                           PeerId localId, int pieceCount, boolean advertiseDht, Listener listener) {
@@ -97,7 +99,7 @@ public final class PeerConnection implements AutoCloseable {
                 socket, theirHandshake, listener);
     }
 
-    /** 啟動讀寫 virtual thread、進行 handshake。立即回傳。 */
+    /** Starts the read/write virtual threads and performs the handshake. Returns immediately. */
     public void start() {
         Thread.ofVirtual().name("bt4j-peer-" + address).start(this::runRead);
     }
@@ -114,7 +116,7 @@ public final class PeerConnection implements AutoCloseable {
                 s.setTcpNoDelay(true);
                 in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
                 out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
-                // 對方 handshake 已由呼叫端讀出並驗證 info-hash；回送我方 handshake
+                // the peer's handshake was already read and its info-hash verified by the caller; send back our handshake
                 out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, true).encode());
                 out.flush();
                 theirs = incomingHandshake;
@@ -136,15 +138,15 @@ public final class PeerConnection implements AutoCloseable {
                 out.flush();
                 byte[] response = in.readNBytes(Handshake.LENGTH);
                 if (response.length != Handshake.LENGTH) {
-                    throw new IOException("handshake 未完成即斷線");
+                    throw new IOException("disconnected before handshake completed");
                 }
                 try {
                     theirs = Handshake.decode(response);
                 } catch (IllegalArgumentException e) {
-                    throw new IOException("handshake 格式錯誤", e);
+                    throw new IOException("malformed handshake", e);
                 }
                 if (!theirs.infoHash().equals(infoHash)) {
-                    throw new IOException("對方 info-hash 不符");
+                    throw new IOException("peer info-hash mismatch");
                 }
                 LOG.log(Level.DEBUG, () -> "outgoing connection handshaked: " + address);
             }
@@ -166,7 +168,7 @@ public final class PeerConnection implements AutoCloseable {
         }
     }
 
-    /** 讀端內部狀態更新（listener 回呼前先套用，讓回呼看到最新狀態）。 */
+    /** Read-side internal state update (applied before the listener callback so it sees the latest state). */
     private void handleInternal(PeerMessage message) {
         switch (message) {
             case PeerMessage.Choke() -> peerChoking = true;
@@ -177,7 +179,7 @@ public final class PeerConnection implements AutoCloseable {
                 if (piece >= 0 && piece < peerBitfield.pieceCount()) {
                     peerBitfield.set(piece);
                 }
-                // 超出範圍：metadata 未知階段的 bitfield 尚未到達，忽略
+                // out of range: the bitfield has not yet arrived during the metadata-unknown phase, ignore
             }
             case PeerMessage.BitfieldMessage(Bitfield bf) -> peerBitfield = bf.copy();
             case PeerMessage.HaveAll() -> peerBitfield.setAll();
@@ -220,7 +222,7 @@ public final class PeerConnection implements AutoCloseable {
                 : address;
     }
 
-    /** 非同步送出訊息（進寫佇列）。連線已關閉時靜默忽略。 */
+    /** Sends a message asynchronously (into the write queue). Silently ignored if the connection is already closed. */
     public void send(PeerMessage message) {
         if (!closed.get()) {
             sendQueue.offer(message);
@@ -231,14 +233,14 @@ public final class PeerConnection implements AutoCloseable {
         return address;
     }
 
-    /** 對方的 handshake（完成前為 null）。 */
+    /** The peer's handshake (null until completed). */
     public Handshake theirHandshake() {
         return theirHandshake;
     }
 
     /**
-     * 對方宣告的 piece 持有狀態（bitfield + have 累積）。
-     * 只保證在 listener 回呼（讀迴圈 thread）內讀取的一致性。
+     * The piece-availability the peer has advertised (bitfield + accumulated have messages).
+     * Consistency is only guaranteed when read within a listener callback (on the read-loop thread).
      */
     public Bitfield peerBitfield() {
         return peerBitfield;

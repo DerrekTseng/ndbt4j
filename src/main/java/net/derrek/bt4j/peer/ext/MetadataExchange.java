@@ -13,10 +13,10 @@ import net.derrek.bt4j.metainfo.InfoHash;
 import net.derrek.bt4j.peer.PeerConnection;
 
 /**
- * ut_metadata（BEP 9）：磁力連結情境下向 peer 索取 info 字典。
- * 以 16 KiB 為單位請求，全部到齊後驗證 SHA-1 == infoHash 才完成；
- * 驗證失敗整個丟棄重來（防偽造）。
- * 每個 torrent（session）一個實例，跨連線共享進度；也回應他人的 request。
+ * ut_metadata (BEP 9): fetches the info dictionary from peers in the magnet-link case.
+ * Requests in 16 KiB units; only completes once all pieces have arrived and SHA-1 == infoHash is verified;
+ * on verification failure the whole thing is discarded and retried (anti-forgery).
+ * One instance per torrent (session), sharing progress across connections; also responds to others' requests.
  */
 public final class MetadataExchange implements Extension {
 
@@ -24,7 +24,7 @@ public final class MetadataExchange implements Extension {
 
     public static final int PIECE_SIZE = 16 * 1024;
 
-    /** metadata 大小上限（正常 info 字典遠小於此；防惡意 metadata_size）。 */
+    /** Upper bound on metadata size (a normal info dictionary is far smaller; guards against a malicious metadata_size). */
     static final int MAX_METADATA_SIZE = 8 * 1024 * 1024;
 
     private static final int MSG_REQUEST = 0;
@@ -34,27 +34,27 @@ public final class MetadataExchange implements Extension {
     private final InfoHash expected;
     private final CompletableFuture<byte[]> future = new CompletableFuture<>();
 
-    private byte[] buffer;      // 取得中的 metadata（null = 尚未知道大小或已重設）
+    private byte[] buffer;      // metadata being fetched (null = size not yet known or has been reset)
     private BitSet received;
     private int pieceTotal;
-    private volatile byte[] supplied; // 已驗證的完整 metadata（可回應他人）
+    private volatile byte[] supplied; // verified, complete metadata (can serve to others)
 
     public MetadataExchange(InfoHash expected) {
         this.expected = expected;
     }
 
-    /** 驗證通過的 info 字典原始位元組。 */
+    /** The raw bytes of the verified info dictionary. */
     public CompletableFuture<byte[]> metadata() {
         return future;
     }
 
-    /** 已持有 metadata 時（.torrent 情境）設定之，讓本端可回應他人的 request。 */
+    /** Set when metadata is already held (.torrent case), so we can respond to others' requests. */
     public synchronized void supply(byte[] infoDictBytes) {
         this.supplied = infoDictBytes.clone();
         future.complete(supplied);
     }
 
-    /** 本端可提供的 metadata 大小（extension handshake 的 metadata_size 欄位）。 */
+    /** The metadata size we can supply (the metadata_size field of the extension handshake). */
     public Optional<Integer> metadataSize() {
         byte[] meta = supplied;
         return meta == null ? Optional.empty() : Optional.of(meta.length);
@@ -72,7 +72,7 @@ public final class MetadataExchange implements Extension {
             return;
         }
         if (!(handshake.get("metadata_size").orElse(null) instanceof BValue.BInteger(long size))) {
-            return; // 對方也沒有 metadata（同樣在等）
+            return; // the peer has no metadata either (also waiting)
         }
         synchronized (this) {
             if (buffer == null) {
@@ -87,7 +87,7 @@ public final class MetadataExchange implements Extension {
         requestMissing(connection, registry);
     }
 
-    /** 向該 peer 請求所有還缺的 piece（重複請求無害，資料到貨以先到者為準）。 */
+    /** Requests all still-missing pieces from this peer (duplicate requests are harmless; the first-arriving data wins). */
     private void requestMissing(PeerConnection connection, ExtensionRegistry registry) {
         int total;
         BitSet done;
@@ -128,7 +128,7 @@ public final class MetadataExchange implements Extension {
             case MSG_REQUEST -> handleRequest(connection, registry, (int) piece);
             case MSG_DATA -> handleData(Arrays.copyOfRange(payload, headerEnd, payload.length), (int) piece);
             case MSG_REJECT -> {
-                // 對方不願提供；其他 peer 的 handshake 會再觸發請求
+                // the peer is unwilling to supply; another peer's handshake will trigger a request again
             }
             default -> {
             }
@@ -159,19 +159,19 @@ public final class MetadataExchange implements Extension {
             int start = piece * PIECE_SIZE;
             int expectedLength = Math.min(PIECE_SIZE, buffer.length - start);
             if (data.length != expectedLength) {
-                return; // 長度不符，丟棄此片
+                return; // length mismatch, discard this piece
             }
             System.arraycopy(data, 0, buffer, start, data.length);
             received.set(piece);
             if (received.cardinality() < pieceTotal) {
                 return;
             }
-            // 全部到齊：驗證 SHA-1 防偽造
+            // all pieces arrived: verify SHA-1 against forgery
             if (InfoHash.ofInfoDict(buffer).equals(expected)) {
                 completed = buffer;
             } else {
                 LOG.log(System.Logger.Level.WARNING, () -> "metadata SHA-1 mismatch with info-hash (forged/corrupt), discarding and retrying: " + expected.hex());
-                buffer = null; // 偽造或損毀：整個重來（之後的 extension handshake 會重新初始化）
+                buffer = null; // forged or corrupt: start over entirely (a later extension handshake reinitializes)
                 received = null;
             }
         }

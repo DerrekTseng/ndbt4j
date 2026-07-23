@@ -1,6 +1,6 @@
 package net.derrek.bt4j;
 
-/** {@link TorrentFileProgress} 的實作。 */
+/** Implementation of {@link TorrentFileProgress}. */
 record TorrentFileProgressImpl(TorrentContentFile file, long downloadedBytes, long totalBytes)
         implements TorrentFileProgress {
 

@@ -4,22 +4,22 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
-/** 20-byte peer id（BEP 20 Azureus 風格：本套件前綴 "-ND1000-" + 12 隨機字元）。 */
+/** 20-byte peer id (BEP 20 Azureus style: this library's prefix "-ND1000-" + 12 random characters). */
 public record PeerId(byte[] bytes) {
 
     public static final String CLIENT_PREFIX = "-ND1000-";
 
-    /** 隨機部分用可列印字元，方便 log 與封包分析時直接閱讀。 */
+    /** The random part uses printable characters for easy reading in logs and packet analysis. */
     private static final String RANDOM_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     private static final SecureRandom RANDOM = new SecureRandom();
 
     public PeerId {
         if (bytes.length != 20) {
-            throw new IllegalArgumentException("peer id 必須是 20 bytes，收到 " + bytes.length);
+            throw new IllegalArgumentException("peer id must be 20 bytes, got " + bytes.length);
         }
     }
 
-    /** 產生本機 peer id（每個 BtClient 實例一個，跨 torrent 共用）。 */
+    /** Generates the local peer id (one per BtClient instance, shared across torrents). */
     public static PeerId generate() {
         byte[] bytes = new byte[20];
         byte[] prefix = CLIENT_PREFIX.getBytes(StandardCharsets.US_ASCII);
@@ -42,7 +42,7 @@ public record PeerId(byte[] bytes) {
 
     @Override
     public String toString() {
-        // peer id 可能含任意位元組（遠端的），非可列印字元以 '.' 顯示
+        // a peer id may contain arbitrary bytes (from the remote); non-printable characters shown as '.'
         StringBuilder sb = new StringBuilder(20);
         for (byte b : bytes) {
             sb.append(b >= 0x20 && b < 0x7F ? (char) b : '.');

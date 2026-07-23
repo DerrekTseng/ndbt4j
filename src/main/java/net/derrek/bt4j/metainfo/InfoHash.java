@@ -7,7 +7,7 @@ import java.util.HexFormat;
 import java.util.Locale;
 
 /**
- * torrent 的識別碼：info 字典原始位元組的 SHA-1（20 bytes，BitTorrent v1）。
+ * A torrent's identifier: the SHA-1 of the raw bytes of the info dictionary (20 bytes, BitTorrent v1).
  */
 public record InfoHash(byte[] bytes) {
 
@@ -15,27 +15,27 @@ public record InfoHash(byte[] bytes) {
 
     public InfoHash {
         if (bytes.length != 20) {
-            throw new IllegalArgumentException("info-hash 必須是 20 bytes，收到 " + bytes.length);
+            throw new IllegalArgumentException("info-hash must be 20 bytes, got " + bytes.length);
         }
     }
 
-    /** 40 字元小寫 hex，即磁力連結 xt=urn:btih: 後的常見形式。 */
+    /** 40-character lowercase hex, the common form following xt=urn:btih: in a magnet link. */
     public String hex() {
         return HexFormat.of().formatHex(bytes);
     }
 
-    /** 解析 40 字元 hex（大小寫皆可）。 */
+    /** Parse 40-character hex (case-insensitive). */
     public static InfoHash fromHex(String hex40) {
         if (hex40.length() != 40) {
-            throw new IllegalArgumentException("hex info-hash 必須是 40 字元，收到 " + hex40.length() + ": " + hex40);
+            throw new IllegalArgumentException("hex info-hash must be 40 characters, got " + hex40.length() + ": " + hex40);
         }
         return new InfoHash(HexFormat.of().parseHex(hex40));
     }
 
-    /** 解析 32 字元 Base32（RFC 4648，舊版磁力連結常用此形式）。 */
+    /** Parse 32-character Base32 (RFC 4648, commonly used by older magnet links). */
     public static InfoHash fromBase32(String base32) {
         if (base32.length() != 32) {
-            throw new IllegalArgumentException("Base32 info-hash 必須是 32 字元，收到 " + base32.length() + ": " + base32);
+            throw new IllegalArgumentException("Base32 info-hash must be 32 characters, got " + base32.length() + ": " + base32);
         }
         byte[] out = new byte[20];
         int buffer = 0;
@@ -44,7 +44,7 @@ public record InfoHash(byte[] bytes) {
         for (char c : base32.toUpperCase(Locale.ROOT).toCharArray()) {
             int value = BASE32_ALPHABET.indexOf(c);
             if (value < 0) {
-                throw new IllegalArgumentException("非法的 Base32 字元: '" + c + "'");
+                throw new IllegalArgumentException("illegal Base32 character: '" + c + "'");
             }
             buffer = (buffer << 5) | value;
             bits += 5;
@@ -56,16 +56,16 @@ public record InfoHash(byte[] bytes) {
         return new InfoHash(out);
     }
 
-    /** 對 info 字典的原始位元組計算 SHA-1。 */
+    /** Compute the SHA-1 of the raw bytes of the info dictionary. */
     public static InfoHash ofInfoDict(byte[] infoDictBytes) {
         try {
             return new InfoHash(MessageDigest.getInstance("SHA-1").digest(infoDictBytes));
         } catch (NoSuchAlgorithmException e) {
-            throw new AssertionError("JDK 必定內建 SHA-1", e);
+            throw new AssertionError("the JDK always ships SHA-1", e);
         }
     }
 
-    // record 對 byte[] 預設是參考比較，須以內容比較（InfoHash 會作為 Map key）
+    // records default to reference comparison for byte[]; must compare by content (InfoHash is used as a Map key)
     @Override
     public boolean equals(Object o) {
         return o instanceof InfoHash other && Arrays.equals(bytes, other.bytes);

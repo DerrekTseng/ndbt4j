@@ -20,7 +20,7 @@ class MetainfoTest {
     private static final byte[] PIECE_HASH_1 = "AAAAAAAAAAAAAAAAAAAA".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] PIECE_HASH_2 = "BBBBBBBBBBBBBBBBBBBB".getBytes(StandardCharsets.US_ASCII);
 
-    // ---- 測試資料建構工具 ----
+    // ---- Test data construction helpers ----
 
     private static BValue.BDictionary dict(Object... keyValues) {
         SequencedMap<BValue.BString, BValue> map = new LinkedHashMap<>();
@@ -46,7 +46,7 @@ class MetainfoTest {
         return out.toByteArray();
     }
 
-    /** 單檔 torrent 的 info：length=40000、pieceLength=16384 → 3 pieces。 */
+    /** info for a single-file torrent: length=40000, pieceLength=16384 → 3 pieces. */
     private static BValue.BDictionary singleFileInfo() {
         return dict(
                 "length", integer(40000),
@@ -61,7 +61,7 @@ class MetainfoTest {
                 "info", info));
     }
 
-    // ---- 單檔 ----
+    // ---- Single file ----
 
     @Test
     void parseSingleFileTorrent() {
@@ -72,7 +72,7 @@ class MetainfoTest {
         assertEquals(16384, meta.pieceLength());
         assertEquals(3, meta.pieceCount());
         assertEquals(16384, meta.pieceLengthAt(0));
-        assertEquals(40000 - 2 * 16384, meta.pieceLengthAt(2)); // 最後一個 piece 較短
+        assertEquals(40000 - 2 * 16384, meta.pieceLengthAt(2)); // the last piece is shorter
         assertArrayEquals(PIECE_HASH_2, meta.pieceHash(1));
         assertFalse(meta.isPrivate());
 
@@ -93,8 +93,8 @@ class MetainfoTest {
 
     @Test
     void infoHashUsesRawBytesEvenForNonCanonicalInput() {
-        // 手工組一個 key 未排序的 info dict（name 在 length 前）——寬容解析，
-        // 且 info-hash 必須對「原始位元組」計算，與重新編碼後的 canonical 形式不同
+        // hand-build an info dict with unsorted keys (name before length) -- lenient parsing,
+        // and the info-hash must be computed over the "raw bytes", differing from the re-encoded canonical form
         byte[] rawInfo = ("d4:name1:a6:lengthi1e12:piece lengthi16384e6:pieces20:AAAAAAAAAAAAAAAAAAAAe")
                 .getBytes(StandardCharsets.ISO_8859_1);
         byte[] torrent = concat("d4:info".getBytes(StandardCharsets.ISO_8859_1), rawInfo,
@@ -105,7 +105,7 @@ class MetainfoTest {
         assertArrayEquals(rawInfo, meta.infoDictBytes());
     }
 
-    // ---- 多檔 ----
+    // ---- Multi-file ----
 
     @Test
     void parseMultiFileTorrent() {
@@ -145,7 +145,7 @@ class MetainfoTest {
                 List.of(URI.create("https://backup.example.com/announce"))), meta.announceList());
     }
 
-    // ---- magnet 情境與匯出 ----
+    // ---- Magnet scenario and export ----
 
     @Test
     void fromInfoDictMatchesParsedTorrent() {
@@ -179,23 +179,23 @@ class MetainfoTest {
         assertTrue(reparsed.announceList().isEmpty());
     }
 
-    // ---- 格式錯誤拒絕 ----
+    // ---- Rejecting malformed input ----
 
     @Test
     void rejectPieceCountMismatch() {
         BValue.BDictionary info = dict(
-                "length", integer(40000),          // 應為 3 pieces
+                "length", integer(40000),          // should be 3 pieces
                 "name", string("test.bin"),
                 "piece length", integer(16384),
-                "pieces", new BValue.BString(PIECE_HASH_1)); // 只有 1 個
+                "pieces", new BValue.BString(PIECE_HASH_1)); // only 1
         assertThrows(IllegalArgumentException.class, () -> Metainfo.parse(torrentBytes(info)));
     }
 
     @Test
     void rejectMalformedInfo() {
-        assertThrows(IllegalArgumentException.class, // 缺 info
+        assertThrows(IllegalArgumentException.class, // missing info
                 () -> Metainfo.parse(Bencode.encode(dict("announce", string("http://x/")))));
-        assertThrows(IllegalArgumentException.class, // pieces 非 20 倍數
+        assertThrows(IllegalArgumentException.class, // pieces not a multiple of 20
                 () -> Metainfo.parse(torrentBytes(dict(
                         "length", integer(1), "name", string("a"),
                         "piece length", integer(16384), "pieces", new BValue.BString(new byte[7])))));
@@ -203,7 +203,7 @@ class MetainfoTest {
                 () -> Metainfo.parse(torrentBytes(dict(
                         "length", integer(1), "name", string("a"),
                         "piece length", integer(0), "pieces", new BValue.BString(PIECE_HASH_1)))));
-        assertThrows(IllegalArgumentException.class, // 缺 name
+        assertThrows(IllegalArgumentException.class, // missing name
                 () -> Metainfo.parse(torrentBytes(dict(
                         "length", integer(1),
                         "piece length", integer(16384), "pieces", new BValue.BString(PIECE_HASH_1)))));

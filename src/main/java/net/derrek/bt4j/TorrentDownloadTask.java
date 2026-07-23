@@ -4,47 +4,47 @@ import java.nio.file.Path;
 import java.util.List;
 
 /**
- * 執行中的下載/做種任務把手。**全部為 getter、執行緒安全、可持續輪詢**（快照式，無 setter）。
- * 生命週期控制在 {@link Bt}（stop / deleteJob）。
+ * Handle to a running download/seeding task. **All getters, thread-safe, continuously pollable** (snapshot-style, no setters).
+ * Lifecycle is controlled from {@link Bt} (stop / deleteJob).
  */
 public interface TorrentDownloadTask {
 
-    /** 40 字元 hex info-hash。 */
+    /** 40-character hex info-hash. */
     String infoHashHex();
 
-    /** torrent 名稱。 */
+    /** Torrent name. */
     String name();
 
-    /** 下載目標目錄。 */
+    /** Download target directory. */
     Path targetDirectory();
 
     TaskState state();
 
-    // ---- 總體進度 ----
+    // ---- overall progress ----
 
-    /** 勾選範圍的總大小（bytes）——總進度的分母。 */
+    /** Total size of the selected set (bytes) -- the denominator of overall progress. */
     long totalBytes();
 
-    /** 已下載並驗證的位元組數（僅計勾選範圍）。 */
+    /** Bytes downloaded and verified (selected set only). */
     long downloadedBytes();
 
-    /** 累計上傳位元組數。 */
+    /** Cumulative uploaded bytes. */
     long uploadedBytes();
 
-    /** 總體進度 0.0 ~ 1.0。 */
+    /** Overall progress 0.0 ~ 1.0. */
     double progress();
 
-    /** 近期下載速率（bytes/s）。 */
+    /** Recent download rate (bytes/s). */
     long downloadRate();
 
-    /** 近期上傳速率（bytes/s）。 */
+    /** Recent upload rate (bytes/s). */
     long uploadRate();
 
-    /** 目前連線的 peer 數。 */
+    /** Number of currently connected peers. */
     int connectedPeers();
 
-    // ---- 逐檔進度 ----
+    // ---- per-file progress ----
 
-    /** 各勾選檔案的進度。 */
+    /** Progress of each selected file. */
     List<TorrentFileProgress> fileProgress();
 }

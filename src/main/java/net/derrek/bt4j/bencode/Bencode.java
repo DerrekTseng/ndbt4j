@@ -10,62 +10,62 @@ import java.util.List;
 import java.util.SequencedMap;
 
 /**
- * bencoding 編碼／解碼入口（BEP 3）。純函式、無 IO。
+ * bencoding encode/decode entry point (BEP 3). Pure functions, no IO.
  *
- * 嚴格性：
+ * Strictness:
  * <ul>
- *   <li>整數拒絕前導零（i03e）與負零（i-0e）；超出 long 範圍視為錯誤</li>
- *   <li>字串長度拒絕前導零（03:abc）</li>
- *   <li>dict 拒絕重複 key 與非字串 key；未排序的 key 寬容接受（保留原始順序）</li>
- *   <li>巢狀深度上限 {@value #MAX_DEPTH}，防止惡意輸入造成 StackOverflow</li>
+ *   <li>Integers reject leading zeros (i03e) and negative zero (i-0e); out-of-long-range is an error</li>
+ *   <li>String lengths reject leading zeros (03:abc)</li>
+ *   <li>Dicts reject duplicate keys and non-string keys; unsorted keys are leniently accepted (original order preserved)</li>
+ *   <li>Nesting depth limit {@value #MAX_DEPTH}, to prevent malicious input from causing a StackOverflow</li>
  * </ul>
  */
 public final class Bencode {
 
-    /** 巢狀深度上限。正常 torrent 深度個位數，此值僅為防禦。 */
+    /** Nesting depth limit. Normal torrents are single-digit deep; this value is purely defensive. */
     public static final int MAX_DEPTH = 512;
 
     private Bencode() {
     }
 
     /**
-     * 解碼完整的 bencoded 位元組。
+     * Decode a complete bencoded byte array.
      *
-     * @throws BencodeException 格式錯誤，或 data 尾端有多餘位元組
+     * @throws BencodeException on malformed input, or if there are trailing bytes after data
      */
     public static BValue decode(byte[] data) {
         DecodeResult result = decode(data, 0);
         if (result.end() != data.length) {
-            throw new BencodeException("位置 " + result.end() + " 之後有多餘位元組");
+            throw new BencodeException("trailing bytes after position " + result.end());
         }
         return result.value();
     }
 
     /**
-     * 從 data 的 offset 開始解碼單一值，並回報結束位置。
-     * 用於需要取得原始位元組區段的情境（例如擷取 info 字典的原始 bytes 以計算 info-hash）。
+     * Decode a single value starting at offset in data, reporting the end position.
+     * Used when the raw byte span is needed (e.g. extracting the raw bytes of the info dictionary to compute the info-hash).
      */
     public static DecodeResult decode(byte[] data, int offset) {
         if (offset < 0 || offset >= data.length) {
-            throw new BencodeException("offset " + offset + " 超出範圍（資料長度 " + data.length + "）");
+            throw new BencodeException("offset " + offset + " out of range (data length " + data.length + ")");
         }
         Decoder decoder = new Decoder(data, offset);
         BValue value = decoder.parseValue(0);
         return new DecodeResult(value, offset, decoder.pos);
     }
 
-    /** 編碼為 bencoded 位元組。dict key 依原始位元組無號排序，輸出為 canonical 形式。 */
+    /** Encode to bencoded bytes. Dict keys are sorted by unsigned raw-byte order; output is canonical form. */
     public static byte[] encode(BValue value) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         encodeTo(value, out);
         return out.toByteArray();
     }
 
-    /** decode(byte[], int) 的結果：解出的值與其在原始資料中的區段 [start, end)。 */
+    /** Result of decode(byte[], int): the decoded value and its span [start, end) in the original data. */
     public record DecodeResult(BValue value, int start, int end) {
     }
 
-    // ---- 編碼 ----
+    // ---- Encoding ----
 
     private static void encodeTo(BValue value, ByteArrayOutputStream out) {
         switch (value) {
@@ -99,7 +99,7 @@ public final class Bencode {
         }
     }
 
-    // ---- 解碼 ----
+    // ---- Decoding ----
 
     private static final class Decoder {
 
@@ -113,7 +113,7 @@ public final class Bencode {
 
         BValue parseValue(int depth) {
             if (depth > MAX_DEPTH) {
-                throw new BencodeException("巢狀深度超過上限 " + MAX_DEPTH);
+                throw new BencodeException("nesting depth exceeds limit " + MAX_DEPTH);
             }
             byte b = peek();
             return switch (b) {
@@ -124,7 +124,7 @@ public final class Bencode {
                     if (isDigit(b)) {
                         yield parseString();
                     }
-                    throw new BencodeException("位置 " + pos + "：非預期字元 '" + (char) b + "'");
+                    throw new BencodeException("position " + pos + ": unexpected character '" + (char) b + "'");
                 }
             };
         }
@@ -138,7 +138,7 @@ public final class Bencode {
             }
             while (peek() != 'e') {
                 if (!isDigit(peek())) {
-                    throw new BencodeException("位置 " + pos + "：整數含非法字元 '" + (char) peek() + "'");
+                    throw new BencodeException("position " + pos + ": integer contains illegal character '" + (char) peek() + "'");
                 }
                 pos++;
             }
@@ -148,20 +148,20 @@ public final class Bencode {
             try {
                 return new BValue.BInteger(Long.parseLong(text));
             } catch (NumberFormatException e) {
-                throw new BencodeException("位置 " + start + "：整數超出 long 範圍: " + text);
+                throw new BencodeException("position " + start + ": integer out of long range: " + text);
             }
         }
 
         private void validateIntegerFormat(String text, int start) {
             String digits = text.startsWith("-") ? text.substring(1) : text;
             if (digits.isEmpty()) {
-                throw new BencodeException("位置 " + start + "：整數缺少數字");
+                throw new BencodeException("position " + start + ": integer has no digits");
             }
             if (digits.length() > 1 && digits.charAt(0) == '0') {
-                throw new BencodeException("位置 " + start + "：整數不得有前導零: " + text);
+                throw new BencodeException("position " + start + ": integer must not have leading zeros: " + text);
             }
             if (text.equals("-0")) {
-                throw new BencodeException("位置 " + start + "：不允許負零");
+                throw new BencodeException("position " + start + ": negative zero is not allowed");
             }
         }
 
@@ -169,23 +169,23 @@ public final class Bencode {
             int lenStart = pos;
             while (peek() != ':') {
                 if (!isDigit(peek())) {
-                    throw new BencodeException("位置 " + pos + "：字串長度含非法字元 '" + (char) peek() + "'");
+                    throw new BencodeException("position " + pos + ": string length contains illegal character '" + (char) peek() + "'");
                 }
                 pos++;
             }
             String lenText = new String(data, lenStart, pos - lenStart, StandardCharsets.US_ASCII);
             if (lenText.length() > 1 && lenText.charAt(0) == '0') {
-                throw new BencodeException("位置 " + lenStart + "：字串長度不得有前導零: " + lenText);
+                throw new BencodeException("position " + lenStart + ": string length must not have leading zeros: " + lenText);
             }
             long length;
             try {
                 length = Long.parseLong(lenText);
             } catch (NumberFormatException e) {
-                throw new BencodeException("位置 " + lenStart + "：字串長度無法解析: " + lenText);
+                throw new BencodeException("position " + lenStart + ": string length could not be parsed: " + lenText);
             }
             pos++; // ':'
             if (length > data.length - pos) {
-                throw new BencodeException("位置 " + lenStart + "：字串長度 " + length + " 超出剩餘資料 " + (data.length - pos));
+                throw new BencodeException("position " + lenStart + ": string length " + length + " exceeds remaining data " + (data.length - pos));
             }
             byte[] bytes = Arrays.copyOfRange(data, pos, pos + (int) length);
             pos += (int) length;
@@ -208,12 +208,12 @@ public final class Bencode {
             while (peek() != 'e') {
                 int keyPos = pos;
                 if (!isDigit(peek())) {
-                    throw new BencodeException("位置 " + keyPos + "：dict 的 key 必須是字串");
+                    throw new BencodeException("position " + keyPos + ": dict key must be a string");
                 }
                 BValue.BString key = parseString();
                 BValue value = parseValue(depth + 1);
                 if (entries.putIfAbsent(key, value) != null) {
-                    throw new BencodeException("位置 " + keyPos + "：dict 有重複的 key: " + key.utf8());
+                    throw new BencodeException("position " + keyPos + ": dict has a duplicate key: " + key.utf8());
                 }
             }
             pos++; // 'e'
@@ -222,7 +222,7 @@ public final class Bencode {
 
         private byte peek() {
             if (pos >= data.length) {
-                throw new BencodeException("資料在位置 " + pos + " 意外結束");
+                throw new BencodeException("data ended unexpectedly at position " + pos);
             }
             return data[pos];
         }

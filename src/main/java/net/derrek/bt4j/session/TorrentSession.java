@@ -8,8 +8,8 @@ import net.derrek.bt4j.metainfo.Metainfo;
 import net.derrek.bt4j.storage.ResumeData;
 
 /**
- * 單一 torrent 的生命週期。由 {@link BtClient#addMagnet}／{@link BtClient#addTorrent} 建立。
- * 狀態遷移見 {@link SessionState}。所有方法執行緒安全。
+ * The lifecycle of a single torrent. Created by {@link BtClient#addMagnet} / {@link BtClient#addTorrent}.
+ * See {@link SessionState} for state transitions. All methods are thread-safe.
  */
 public interface TorrentSession extends AutoCloseable {
 
@@ -17,35 +17,35 @@ public interface TorrentSession extends AutoCloseable {
 
     SessionState state();
 
-    /** metadata。磁力連結在 FETCHING_METADATA 階段為 empty。 */
+    /** The metadata. Empty for a magnet link during the FETCHING_METADATA stage. */
     Optional<Metainfo> metadata();
 
     /**
-     * 阻塞等待 metadata 就緒（配合 virtual thread 使用；.torrent 來源立即回傳）。
+     * Blocks until metadata is ready (intended for use with virtual threads; a .torrent source returns immediately).
      *
-     * @throws TimeoutException 逾時仍未取得（例如死種）
+     * @throws TimeoutException if metadata is still not obtained after the timeout (e.g. a dead torrent)
      */
     Metainfo awaitMetadata(Duration timeout) throws TimeoutException, InterruptedException;
 
     /**
-     * 依計畫開始下載（METADATA_READY → DOWNLOADING）。
-     * 已在下載中時重複呼叫視為變更計畫（重算 piece 需求集合）。
+     * Starts downloading according to the plan (METADATA_READY → DOWNLOADING).
+     * Calling again while already downloading is treated as changing the plan (recomputes the required piece set).
      */
     void start(DownloadPlan plan);
 
     /**
-     * 手動關閉上傳：對 tracker 發 stopped、停收連入、斷開連線（→ STOPPED）。
-     * 在 DOWNLOADING 狀態呼叫則同時中止下載。
+     * Manually stops uploading: sends stopped to the tracker, stops accepting incoming connections, and disconnects (→ STOPPED).
+     * Called in the DOWNLOADING state, it also aborts the download.
      */
     void stopSeeding();
 
-    /** 目前統計快照（任何狀態皆可輪詢）。 */
+    /** A snapshot of the current statistics (pollable in any state). */
     TorrentStats stats();
 
-    /** 逐檔已下載進度（僅列勾選的檔案）。metadata 未就緒時為空清單。 */
+    /** Per-file download progress (only the selected files are listed). An empty list when metadata is not yet ready. */
     java.util.List<FileProgress> fileProgress();
 
-    /** 單一檔案的下載進度。 */
+    /** Download progress of a single file. */
     record FileProgress(int fileIndex, java.util.List<String> path, long downloadedBytes, long totalBytes) {
     }
 
@@ -53,10 +53,10 @@ public interface TorrentSession extends AutoCloseable {
 
     void removeListener(SessionListener listener);
 
-    /** 匯出目前進度為 resume 資料（上層負責持久化與重啟後回填 BtClient）。 */
+    /** Exports the current progress as resume data (the caller is responsible for persisting it and restoring it into BtClient after a restart). */
     ResumeData resumeData();
 
-    /** 停止並釋放資源（隱含 stopSeeding 的 tracker stopped announce）。已下載的檔案保留。 */
+    /** Stops and releases resources (implies stopSeeding's tracker stopped announce). Downloaded files are kept. */
     @Override
     void close();
 }

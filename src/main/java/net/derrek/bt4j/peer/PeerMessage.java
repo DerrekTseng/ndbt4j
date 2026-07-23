@@ -7,84 +7,84 @@ import java.nio.ByteBuffer;
 import net.derrek.bt4j.piece.Bitfield;
 
 /**
- * peer wire protocol 訊息（BEP 3；Extended 為 BEP 10；0x0D-0x11 為 BEP 6 Fast Extension）。
- * 線上格式：&lt;length u32&gt;&lt;message id u8&gt;&lt;payload&gt;；length=0 為 keep-alive。
+ * Peer wire protocol messages (BEP 3; Extended is BEP 10; 0x0D-0x11 are BEP 6 Fast Extension).
+ * Wire format: &lt;length u32&gt;&lt;message id u8&gt;&lt;payload&gt;; length=0 is keep-alive.
  */
 public sealed interface PeerMessage {
 
-    /** 單則訊息長度上限（最大 block 128 KiB + 標頭餘裕），超過視為協定錯誤。 */
+    /** Upper bound on a single message length (max block 128 KiB + header margin); exceeding it is a protocol error. */
     int MAX_MESSAGE_LENGTH = 128 * 1024 + 64;
 
     record KeepAlive() implements PeerMessage {
     }
 
-    /** id=0：本端拒絕回應對方的 request。 */
+    /** id=0: we refuse to respond to the peer's requests. */
     record Choke() implements PeerMessage {
     }
 
-    /** id=1：允許對方 request。 */
+    /** id=1: allow the peer to make requests. */
     record Unchoke() implements PeerMessage {
     }
 
-    /** id=2：對對方持有的 piece 有興趣。 */
+    /** id=2: interested in pieces the peer holds. */
     record Interested() implements PeerMessage {
     }
 
-    /** id=3。 */
+    /** id=3. */
     record NotInterested() implements PeerMessage {
     }
 
-    /** id=4：宣告取得一個完整且驗證過的 piece。 */
+    /** id=4: announces acquisition of a complete and verified piece. */
     record Have(int pieceIndex) implements PeerMessage {
     }
 
-    /** id=5：handshake 後第一則訊息，宣告持有的 piece 集合。 */
+    /** id=5: the first message after the handshake, announcing the set of pieces held. */
     record BitfieldMessage(Bitfield bitfield) implements PeerMessage {
     }
 
-    /** id=6：請求一個 block（length 慣例 16 KiB，不得超過 128 KiB）。 */
+    /** id=6: requests a block (length conventionally 16 KiB, must not exceed 128 KiB). */
     record Request(int pieceIndex, int begin, int length) implements PeerMessage {
     }
 
-    /** id=7：block 資料。 */
+    /** id=7: block data. */
     record Piece(int pieceIndex, int begin, byte[] data) implements PeerMessage {
     }
 
-    /** id=8：取消先前的 request（endgame 用）。 */
+    /** id=8: cancels a previous request (used in endgame). */
     record Cancel(int pieceIndex, int begin, int length) implements PeerMessage {
     }
 
-    /** id=9：告知本機 DHT UDP port（BEP 5，reserved bit 0x01 時）。 */
+    /** id=9: advertises our DHT UDP port (BEP 5, when reserved bit 0x01 is set). */
     record Port(int dhtPort) implements PeerMessage {
     }
 
-    /** id=20：擴充訊息（BEP 10）。extendedId=0 為 extension handshake。 */
+    /** id=20: extension message (BEP 10). extendedId=0 is the extension handshake. */
     record Extended(int extendedId, byte[] payload) implements PeerMessage {
     }
 
-    // --- Fast Extension（BEP 6，reserved 0x04 時才可使用）---
+    // --- Fast Extension (BEP 6, usable only when reserved 0x04 is set) ---
 
-    /** id=0x0D：suggest piece。 */
+    /** id=0x0D: suggest piece. */
     record SuggestPiece(int pieceIndex) implements PeerMessage {
     }
 
-    /** id=0x0E：等同持有全部 piece 的 bitfield。 */
+    /** id=0x0E: equivalent to a bitfield holding all pieces. */
     record HaveAll() implements PeerMessage {
     }
 
-    /** id=0x0F：等同全空 bitfield。 */
+    /** id=0x0F: equivalent to an all-empty bitfield. */
     record HaveNone() implements PeerMessage {
     }
 
-    /** id=0x10：明確拒絕一個 request（取代默默不回）。 */
+    /** id=0x10: explicitly rejects a request (instead of silently not responding). */
     record RejectRequest(int pieceIndex, int begin, int length) implements PeerMessage {
     }
 
-    /** id=0x11：choke 期間仍允許對方下載的 piece。 */
+    /** id=0x11: a piece the peer is allowed to download even while choked. */
     record AllowedFast(int pieceIndex) implements PeerMessage {
     }
 
-    // ---- 編碼 ----
+    // ---- encode ----
 
     static void write(DataOutputStream out, PeerMessage message) throws IOException {
         switch (message) {
@@ -154,13 +154,13 @@ public sealed interface PeerMessage {
         out.writeByte(id);
     }
 
-    // ---- 解碼 ----
+    // ---- decode ----
 
     /**
-     * 讀取下一則訊息（阻塞）。未知的 message id 整則略過並繼續讀（相容性），
-     * 長度異常或串流結束拋 IOException。
+     * Reads the next message (blocking). Unknown message ids are skipped entirely and reading continues
+     * (for compatibility); an abnormal length or end of stream throws IOException.
      *
-     * @param pieceCount 用於驗證 bitfield 長度
+     * @param pieceCount used to validate the bitfield length
      */
     static PeerMessage read(DataInputStream in, int pieceCount) throws IOException {
         while (true) {
@@ -169,7 +169,7 @@ public sealed interface PeerMessage {
                 return new KeepAlive();
             }
             if (length < 0 || length > MAX_MESSAGE_LENGTH) {
-                throw new IOException("訊息長度異常: " + length);
+                throw new IOException("abnormal message length: " + length);
             }
             int id = in.readUnsignedByte();
             byte[] payload = new byte[length - 1];
@@ -190,7 +190,7 @@ public sealed interface PeerMessage {
                 case 2 -> new Interested();
                 case 3 -> new NotInterested();
                 case 4 -> new Have(buf.getInt());
-                // pieceCount <= 0（magnet 情境 metadata 未知）：以 payload 位元數當 piece 數寬容解析
+                // pieceCount <= 0 (magnet case, metadata unknown): leniently parse using the payload bit count as the piece count
                 case 5 -> new BitfieldMessage(Bitfield.fromBytes(payload,
                         pieceCount > 0 ? pieceCount : payload.length * 8));
                 case 6 -> new Request(buf.getInt(), buf.getInt(), buf.getInt());
@@ -214,10 +214,10 @@ public sealed interface PeerMessage {
                     buf.get(data);
                     yield new Extended(extendedId, data);
                 }
-                default -> null; // 未知 id：呼叫端略過
+                default -> null; // unknown id: skipped by the caller
             };
         } catch (java.nio.BufferUnderflowException | IllegalArgumentException e) {
-            throw new IOException("訊息 id=" + id + " 的 payload 格式錯誤", e);
+            throw new IOException("malformed payload for message id=" + id, e);
         }
     }
 }

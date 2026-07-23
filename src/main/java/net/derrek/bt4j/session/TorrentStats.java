@@ -1,15 +1,15 @@
 package net.derrek.bt4j.session;
 
 /**
- * session 統計快照（不可變，可安全輪詢——排程器/UI 定期拉取用）。
+ * A snapshot of session statistics (immutable and safe to poll — for periodic pulls by a scheduler/UI).
  *
- * @param downloadedBytes 已下載且驗證的 bytes（僅計勾選範圍）
- * @param uploadedBytes   累計上傳 bytes
- * @param wantedBytes     勾選範圍總 bytes（進度分母；metadata 未就緒時為 0）
+ * @param downloadedBytes bytes downloaded and verified (counting only the selected range)
+ * @param uploadedBytes   cumulative uploaded bytes
+ * @param wantedBytes     total bytes of the selected range (the progress denominator; 0 when metadata is not yet ready)
  * @param progress        0.0 ~ 1.0
- * @param connectedPeers  目前連線的 peer 數
- * @param downloadRate    近期下載速率（bytes/s）
- * @param uploadRate      近期上傳速率（bytes/s）
+ * @param connectedPeers  the number of currently connected peers
+ * @param downloadRate    recent download rate (bytes/s)
+ * @param uploadRate      recent upload rate (bytes/s)
  */
 public record TorrentStats(long downloadedBytes,
                            long uploadedBytes,

@@ -19,9 +19,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * 磁力連結端到端驗收（M6）：
- * addMagnet → tracker/x.pe 找 peer → BEP 10 擴充握手 → BEP 9 取 metadata（SHA-1 驗證）
- * → METADATA_READY → UI 勾選（此處全選）→ 下載完成。
+ * Magnet-link end-to-end acceptance (M6):
+ * addMagnet -> find peers via tracker/x.pe -> BEP 10 extension handshake -> fetch metadata via BEP 9 (SHA-1 verification)
+ * -> METADATA_READY -> UI selection (select all here) -> download complete.
  */
 class MagnetEndToEndTest {
 
@@ -59,7 +59,7 @@ class MagnetEndToEndTest {
                     }
                 });
 
-                // UI 情境：等 metadata → 顯示檔案清單 → 勾選 → 開始下載
+                // UI scenario: await metadata -> show file list -> select -> start download
                 Metainfo fetched = session.awaitMetadata(Duration.ofSeconds(20));
                 assertTrue(metadataReady.await(5, TimeUnit.SECONDS));
                 assertEquals(SessionState.METADATA_READY, session.state());
@@ -69,13 +69,13 @@ class MagnetEndToEndTest {
                 assertEquals(80_000, fetched.totalLength());
                 assertArrayEquals(source.infoDictBytes(), fetched.infoDictBytes());
 
-                // 磁力取得的 metadata 可匯出成 .torrent（info-hash 不變）
+                // metadata obtained from the magnet can be exported as a .torrent (info-hash unchanged)
                 Path exported = tmp.resolve("exported.torrent");
                 fetched.saveTorrentFile(exported);
                 assertEquals(source.infoHash(), Metainfo.parse(exported).infoHash());
 
                 session.start(DownloadPlan.allFiles(tmp));
-                assertTrue(completed.await(30, TimeUnit.SECONDS), "30 秒內未完成下載");
+                assertTrue(completed.await(30, TimeUnit.SECONDS), "download did not complete within 30 seconds");
                 assertEquals(SessionState.SEEDING, session.state());
             }
         }
@@ -88,7 +88,7 @@ class MagnetEndToEndTest {
         Metainfo source = TorrentFixtures.singleFile("xpe.bin", content, PIECE_LENGTH, "http://unused/");
 
         try (TestSeeder seeder = new TestSeeder(source, content)) {
-            // 無 tracker，只靠 x.pe 直連（模擬 M7 前的 trackerless 情境）
+            // No tracker, relying solely on x.pe direct connection (simulating the trackerless scenario before M7)
             String magnet = "magnet:?xt=urn:btih:" + source.infoHash().hex()
                     + "&x.pe=127.0.0.1:" + seeder.port();
 

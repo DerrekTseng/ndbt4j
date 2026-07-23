@@ -22,7 +22,7 @@ class TrackerManagerTest {
     private static final PeerAddress PEER =
             new PeerAddress(InetSocketAddress.createUnresolved("10.0.0.9", 6881));
 
-    /** 可程式化的 stub tracker。 */
+    /** A programmable stub tracker. */
     private static final class StubTracker implements Tracker {
 
         final String name;
@@ -45,7 +45,7 @@ class TrackerManagerTest {
             events.add(request.event());
             announced.countDown();
             if (failing) {
-                throw new TrackerException("stub 失敗: " + name);
+                throw new TrackerException("stub failure: " + name);
             }
             return new AnnounceResponse(Duration.ofMinutes(30),
                     OptionalInt.of(1), OptionalInt.of(1), List.of(PEER));
@@ -87,8 +87,8 @@ class TrackerManagerTest {
         StubTracker good = new StubTracker("good", false);
         CountDownLatch delivered = new CountDownLatch(1);
 
-        // 單一 tier 兩個 tracker：TrackerManager 建構時會洗牌，
-        // 但無論順序為何，最終必定輪到 good 成功
+        // two trackers in a single tier: TrackerManager shuffles at construction,
+        // but whatever the order, good will eventually get its turn and succeed
         TrackerManager manager = new TrackerManager(
                 List.of(List.of(bad, good)),
                 TrackerManagerTest::request,
@@ -131,7 +131,7 @@ class TrackerManagerTest {
         assertTrue(failing.announced.await(5, TimeUnit.SECONDS));
         manager.close();
         Thread.sleep(200);
-        // 從未成功 announce（started 沒送達），關閉時不送 stopped
+        // never announced successfully (started never got through), so no stopped is sent on close
         assertTrue(failing.events.stream().noneMatch(e -> e == AnnounceEvent.STOPPED));
     }
 
@@ -139,7 +139,7 @@ class TrackerManagerTest {
         long deadline = System.currentTimeMillis() + 5000;
         while (!condition.getAsBoolean()) {
             if (System.currentTimeMillis() > deadline) {
-                throw new AssertionError("等候條件逾時");
+                throw new AssertionError("timed out waiting for condition");
             }
             Thread.sleep(20);
         }

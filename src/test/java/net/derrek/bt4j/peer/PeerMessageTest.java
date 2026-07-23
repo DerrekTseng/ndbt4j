@@ -82,10 +82,10 @@ class PeerMessageTest {
     void unknownMessageIdIsSkipped() throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         DataOutputStream out = new DataOutputStream(bytes);
-        out.writeInt(3);      // 未知 id=99 的訊息
+        out.writeInt(3);      // a message with unknown id=99
         out.writeByte(99);
         out.writeShort(0x1234);
-        PeerMessage.write(out, new PeerMessage.Have(5)); // 後面跟一則正常訊息
+        PeerMessage.write(out, new PeerMessage.Have(5)); // followed by a normal message
 
         assertEquals(new PeerMessage.Have(5), PeerMessage.read(stream(bytes.toByteArray()), 10));
     }
@@ -106,7 +106,7 @@ class PeerMessageTest {
     void malformedPayloadThrows() throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         DataOutputStream out = new DataOutputStream(bytes);
-        out.writeInt(2); // Have 應為 5 bytes payload，只給 1
+        out.writeInt(2); // Have should have a 5-byte payload, only 1 given
         out.writeByte(4);
         out.writeByte(0);
         assertThrows(IOException.class, () -> PeerMessage.read(stream(bytes.toByteArray()), 10));

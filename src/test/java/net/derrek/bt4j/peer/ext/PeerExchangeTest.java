@@ -16,7 +16,7 @@ import net.derrek.bt4j.peer.PeerId;
 import net.derrek.bt4j.peer.PeerMessage;
 import org.junit.jupiter.api.Test;
 
-/** PEX（BEP 11）wire 格式 build/parse 往返，及 onMessage 的寬容性。 */
+/** PEX (BEP 11) wire-format build/parse round trip, and the leniency of onMessage. */
 class PeerExchangeTest {
 
     private static final InfoHash HASH = InfoHash.fromHex("417999cdf5411a6522abeb34c2059434a69d1854");
@@ -35,7 +35,7 @@ class PeerExchangeTest {
         }
     };
 
-    /** 未 start 的連線，只作為 onMessage 的 address 來源。 */
+    /** An unstarted connection, used only as the address source for onMessage. */
     private static PeerConnection dummyConn() {
         return PeerConnection.outgoing(
                 new PeerAddress(InetSocketAddress.createUnresolved("127.0.0.1", 1)),
@@ -77,9 +77,9 @@ class PeerExchangeTest {
         ExtensionRegistry registry = new ExtensionRegistry(List.of(receiver));
         PeerConnection conn = dummyConn();
 
-        receiver.onMessage(conn, registry, "not-bencoding".getBytes());     // 非 bencoding
-        receiver.onMessage(conn, registry, "le".getBytes());                // 非 dictionary
-        receiver.onMessage(conn, registry, "d5:added5:AAAAAe".getBytes());  // added 非 6 的倍數
+        receiver.onMessage(conn, registry, "not-bencoding".getBytes());     // not bencoding
+        receiver.onMessage(conn, registry, "le".getBytes());                // not a dictionary
+        receiver.onMessage(conn, registry, "d5:added5:AAAAAe".getBytes());  // added not a multiple of 6
         assertTrue(discovered.isEmpty());
     }
 

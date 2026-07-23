@@ -10,15 +10,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 /**
- * 需要網路的整合測試，預設不執行。
- * 執行方式：{@code mvn test -Dbt4j.integration=true}
+ * Integration test that requires network access; not run by default.
+ * How to run: {@code mvn test -Dbt4j.integration=true}
  */
 @EnabledIfSystemProperty(named = "bt4j.integration", matches = "true")
 class HttpTrackerIntegrationTest {
 
     @Test
     void announceToPublicTracker() throws TrackerException {
-        // 隨機 info-hash：只驗證協定往返（tracker 對未知 hash 回空 peer 清單 + interval）
+        // random info-hash: only verifies the protocol round-trip (the tracker returns an empty peer list + interval for an unknown hash)
         byte[] randomHash = new byte[20];
         new SecureRandom().nextBytes(randomHash);
 
@@ -26,7 +26,7 @@ class HttpTrackerIntegrationTest {
         AnnounceResponse response = tracker.announce(new AnnounceRequest(
                 new InfoHash(randomHash), PeerId.generate(), 6881, 0, 0, 0, AnnounceEvent.STARTED, 10));
 
-        assertTrue(response.interval().toSeconds() > 0, "interval 應為正數");
-        // 對隨機 hash，peers 幾乎必為空，但不強制（萬一撞到真 hash）
+        assertTrue(response.interval().toSeconds() > 0, "interval should be positive");
+        // for a random hash, peers is almost always empty, but not enforced (in case it collides with a real hash)
     }
 }

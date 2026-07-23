@@ -10,8 +10,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 /**
- * 需要網路的整合測試，預設不執行。
- * 執行方式：{@code mvn test -Dbt4j.integration=true}
+ * Integration test that requires network access; not run by default.
+ * How to run: {@code mvn test -Dbt4j.integration=true}
  */
 @EnabledIfSystemProperty(named = "bt4j.integration", matches = "true")
 class UdpTrackerIntegrationTest {
@@ -26,6 +26,6 @@ class UdpTrackerIntegrationTest {
                 new InfoHash(randomHash), PeerId.generate(), 6881, 0, 0, 0,
                 AnnounceEvent.STARTED, 10));
 
-        assertTrue(response.interval().toSeconds() > 0, "interval 應為正數");
+        assertTrue(response.interval().toSeconds() > 0, "interval should be positive");
     }
 }

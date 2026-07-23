@@ -35,12 +35,12 @@ class FileStorageTest {
 
             for (int p = 0; p < meta.pieceCount(); p++) {
                 writePiece(storage, meta, content, p);
-                assertTrue(storage.verifyPiece(p), "piece " + p + " 驗證應通過");
+                assertTrue(storage.verifyPiece(p), "piece " + p + " should pass verification");
             }
             assertTrue(storage.completedPieces().isComplete());
             assertArrayEquals(content, Files.readAllBytes(tmp.resolve("s.bin")));
 
-            // read 跨 piece 邊界
+            // read across a piece boundary
             byte[] read = storage.read(0, PIECE_LENGTH - 10, 10);
             assertArrayEquals(Arrays.copyOfRange(content, PIECE_LENGTH - 10, PIECE_LENGTH), read);
         }
@@ -58,7 +58,7 @@ class FileStorageTest {
             assertFalse(storage.verifyPiece(0));
             assertFalse(storage.completedPieces().get(0));
 
-            // 丟棄後重寫正確資料可通過
+            // after discarding, rewriting the correct data passes
             writePiece(storage, meta, content, 0);
             assertTrue(storage.verifyPiece(0));
         }
@@ -66,12 +66,12 @@ class FileStorageTest {
 
     @Test
     void blocksAccumulateIntoPiece(@TempDir Path tmp) throws IOException {
-        byte[] content = TorrentFixtures.randomBytes(PIECE_LENGTH, 13); // 恰 1 piece
+        byte[] content = TorrentFixtures.randomBytes(PIECE_LENGTH, 13); // exactly 1 piece
         Metainfo meta = TorrentFixtures.singleFile("b.bin", content, PIECE_LENGTH, "http://t/a");
         try (FileStorage storage = new FileStorage(meta, PieceSelection.of(meta, Set.of()), tmp)) {
 
             int half = PIECE_LENGTH / 2;
-            storage.write(0, half, Arrays.copyOfRange(content, half, PIECE_LENGTH)); // 亂序寫
+            storage.write(0, half, Arrays.copyOfRange(content, half, PIECE_LENGTH)); // out-of-order write
             storage.write(0, 0, Arrays.copyOfRange(content, 0, half));
             assertTrue(storage.verifyPiece(0));
             assertArrayEquals(content, Files.readAllBytes(tmp.resolve("b.bin")));
@@ -80,7 +80,7 @@ class FileStorageTest {
 
     @Test
     void unselectedFilesAreNotCreatedAndBoundaryBytesDiscarded(@TempDir Path tmp) throws IOException {
-        // a[0,20000) b[20000,40000) c[40000,50000)，piece 1/2 是 b 的邊界 piece
+        // a[0,20000) b[20000,40000) c[40000,50000); pieces 1/2 are b's boundary pieces
         byte[] a = TorrentFixtures.randomBytes(20000, 21);
         byte[] b = TorrentFixtures.randomBytes(20000, 22);
         byte[] c = TorrentFixtures.randomBytes(10000, 23);
@@ -94,18 +94,18 @@ class FileStorageTest {
                 new TorrentFixtures.TestFile(List.of("c.bin"), c)), PIECE_LENGTH, "http://t/a");
 
         try (FileStorage storage = new FileStorage(meta, PieceSelection.of(meta, Set.of(1)), tmp)) {
-            // 下載 b 需要的 piece 1、2（完整下載以驗證）
+            // pieces 1 and 2 needed for b (downloaded in full to verify)
             writePiece(storage, meta, all, 1);
             writePiece(storage, meta, all, 2);
             assertTrue(storage.verifyPiece(1));
             assertTrue(storage.verifyPiece(2));
 
-            // 只有 b.bin 落地；a、c 不建檔
+            // only b.bin lands on disk; a and c are not created
             assertTrue(Files.exists(tmp.resolve("multi").resolve("sub").resolve("b.bin")));
             assertFalse(Files.exists(tmp.resolve("multi").resolve("a.bin")));
             assertFalse(Files.exists(tmp.resolve("multi").resolve("c.bin")));
 
-            // b.bin 內容正確（邊界 piece 的 a/c 區段被丟棄，b 區段寫對位置）
+            // b.bin content is correct (a/c ranges of the boundary pieces discarded, b range written to the right position)
             byte[] written = Files.readAllBytes(tmp.resolve("multi").resolve("sub").resolve("b.bin"));
             assertArrayEquals(b, written);
         }
@@ -123,7 +123,7 @@ class FileStorageTest {
                 first.verifyPiece(p);
             }
         }
-        // 模擬重啟：新的 storage 例項 recheck 後應回復全部進度
+        // simulate a restart: a new storage instance should recover all progress after recheck
         try (FileStorage second = new FileStorage(meta, selection, tmp)) {
             assertEquals(0, second.completedPieces().cardinality());
             assertTrue(second.recheck().isComplete());

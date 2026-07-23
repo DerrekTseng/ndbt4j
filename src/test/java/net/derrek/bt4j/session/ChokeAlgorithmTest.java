@@ -24,14 +24,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * choke 演算法：一個 bt4j 做種端面對多個「只表示 Interested」的 leecher 時，
- * 同時被 unchoke 的數量不應超過上傳槽數（UPLOAD_SLOTS=4）。
+ * Choke algorithm: when a bt4j seeder faces many leechers that only send
+ * Interested, the number simultaneously unchoked must not exceed the upload
+ * slot count (UPLOAD_SLOTS=4).
  */
 class ChokeAlgorithmTest {
 
     private static final int PIECE_LENGTH = 16384;
 
-    /** 極簡 leecher：連上做種端、送 Interested，記錄是否收到 Unchoke。永不 request。 */
+    /** Minimal leecher: connects to the seeder, sends Interested, records whether Unchoke was received. Never requests. */
     private static final class NoisyLeecher implements Runnable {
         private final int port;
         private final Metainfo meta;
@@ -53,12 +54,12 @@ class ChokeAlgorithmTest {
                 DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
                 out.write(Handshake.outgoing(meta.infoHash(), PeerId.generate(), false, true, false).encode());
                 out.flush();
-                in.readNBytes(Handshake.LENGTH); // 對方 handshake
+                in.readNBytes(Handshake.LENGTH); // peer handshake
                 PeerMessage.write(out, new PeerMessage.Interested());
                 while (!Thread.currentThread().isInterrupted()) {
                     PeerMessage msg = PeerMessage.read(in, meta.pieceCount());
                     if (msg instanceof PeerMessage.Unchoke) {
-                        unchoked.set(true);   // 追蹤「當前」choke 狀態（後到的訊息覆蓋）
+                        unchoked.set(true);   // track the "current" choke state (later messages override)
                     } else if (msg instanceof PeerMessage.Choke) {
                         unchoked.set(false);
                     }
@@ -100,7 +101,7 @@ class ChokeAlgorithmTest {
                 threads.add(Thread.ofVirtual().start(l));
             }
 
-            // 給 choke 演算法時間（interest 觸發即時重評；數量受 UPLOAD_SLOTS 限制）
+            // Give the choke algorithm time (interest triggers immediate re-evaluation; count is capped by UPLOAD_SLOTS)
             long deadline = System.currentTimeMillis() + 8000;
             long unchokedCount;
             do {
@@ -108,14 +109,14 @@ class ChokeAlgorithmTest {
                 unchokedCount = leechers.stream().filter(l -> l.unchoked.get()).count();
             } while (unchokedCount == 0 && System.currentTimeMillis() < deadline);
 
-            Thread.sleep(1500); // 讓狀態穩定
+            Thread.sleep(1500); // let the state settle
             unchokedCount = leechers.stream().filter(l -> l.unchoked.get()).count();
 
             leechers.forEach(NoisyLeecher::close);
             threads.forEach(Thread::interrupt);
 
-            assertTrue(unchokedCount >= 1, "至少要 unchoke 一個 peer，實際 " + unchokedCount);
-            assertTrue(unchokedCount <= 4, "同時 unchoke 數不應超過 UPLOAD_SLOTS=4，實際 " + unchokedCount);
+            assertTrue(unchokedCount >= 1, "at least one peer should be unchoked, actual " + unchokedCount);
+            assertTrue(unchokedCount <= 4, "simultaneous unchoke count should not exceed UPLOAD_SLOTS=4, actual " + unchokedCount);
         }
     }
 }

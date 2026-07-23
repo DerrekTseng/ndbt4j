@@ -3,7 +3,7 @@ package net.derrek.bt4j;
 import java.util.List;
 import net.derrek.bt4j.metainfo.Metainfo;
 
-/** {@link TorrentContent} 的實作，包裝 {@link Metainfo}（純資料）。 */
+/** Implementation of {@link TorrentContent}, wrapping a {@link Metainfo} (pure data). */
 final class TorrentContentImpl implements TorrentContent {
 
     final Metainfo metainfo;

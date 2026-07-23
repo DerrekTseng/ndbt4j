@@ -14,14 +14,15 @@ import net.derrek.bt4j.piece.Bitfield;
 import net.derrek.bt4j.piece.PieceSelection;
 
 /**
- * 以 FileChannel 實作的檔案儲存。
+ * File storage implemented with FileChannel.
  *
- * 暫存策略：piece 未驗證前的 block 累積在記憶體緩衝（上限由
- * {@code RarestFirstPicker.MAX_ACTIVE_PIECES} × pieceLength 決定），
- * 驗證通過才寫入磁碟——邊界 piece 中屬於未勾選檔案的位元組區段直接丟棄，
- * 未勾選的檔案完全不建立。驗證失敗的 piece 整個丟棄重來。
+ * Buffering strategy: blocks of an unverified piece accumulate in an in-memory buffer (bounded by
+ * {@code RarestFirstPicker.MAX_ACTIVE_PIECES} x pieceLength), and are written to disk only after
+ * verification passes -- byte ranges within a boundary piece that belong to unselected files are
+ * discarded outright, and unselected files are never created. A piece that fails verification is
+ * discarded entirely and re-downloaded.
  *
- * 所有方法同步，可由多條 peer 執行緒併發呼叫。
+ * All methods are synchronized and may be called concurrently by multiple peer threads.
  */
 public final class FileStorage implements Storage {
 
@@ -36,14 +37,14 @@ public final class FileStorage implements Storage {
     private boolean closed;
 
     /**
-     * @param saveTo 下載根目錄（檔案路徑 = saveTo/FileEntry.path…；多檔 torrent 的第一層即 torrent name）
+     * @param saveTo download root directory (file path = saveTo/FileEntry.path...; for a multi-file torrent the first level is the torrent name)
      */
     public FileStorage(Metainfo metainfo, PieceSelection selection, Path saveTo) {
         this(metainfo, selection, saveTo, new Bitfield(metainfo.pieceCount()));
     }
 
     /**
-     * resume 用：以既有的已完成 piece 集合建立（其資料視為已在磁碟上，之前驗證通過才會被標記）。
+     * For resume: construct with an existing set of completed pieces (their data is assumed already on disk, marked only if previously verified).
      */
     public FileStorage(Metainfo metainfo, PieceSelection selection, Path saveTo, Bitfield alreadyCompleted) {
         this.metainfo = metainfo;
@@ -64,13 +65,13 @@ public final class FileStorage implements Storage {
     @Override
     public synchronized byte[] read(int pieceIndex, int offset, int length) throws IOException {
         if (!completed.get(pieceIndex)) {
-            throw new IllegalStateException("piece " + pieceIndex + " 尚未完成");
+            throw new IllegalStateException("piece " + pieceIndex + " is not yet complete");
         }
         byte[] out = new byte[length];
         long pieceStart = (long) pieceIndex * metainfo.pieceLength() + offset;
         int filled = readFromFiles(pieceStart, out);
         if (filled != length) {
-            throw new IllegalStateException("piece " + pieceIndex + " 的部分位元組不在磁碟上（未勾選檔案的區段）");
+            throw new IllegalStateException("some bytes of piece " + pieceIndex + " are not on disk (ranges belonging to unselected files)");
         }
         return out;
     }
@@ -82,7 +83,7 @@ public final class FileStorage implements Storage {
         }
         byte[] buffer = pieceBuffers.get(pieceIndex);
         if (buffer == null) {
-            throw new IllegalStateException("piece " + pieceIndex + " 沒有待驗證的資料");
+            throw new IllegalStateException("piece " + pieceIndex + " has no data to verify");
         }
         pieceBuffers.remove(pieceIndex);
         if (!java.util.Arrays.equals(sha1(buffer), metainfo.pieceHash(pieceIndex))) {
@@ -95,7 +96,7 @@ public final class FileStorage implements Storage {
         return true;
     }
 
-    /** 把驗證過的 piece 中「屬於勾選檔案」的區段寫入對應檔案位置。 */
+    /** Write the ranges of a verified piece that "belong to selected files" to their corresponding file positions. */
     private void writeVerifiedPiece(int pieceIndex, byte[] buffer) throws IOException {
         long pieceStart = (long) pieceIndex * metainfo.pieceLength();
         long pieceEnd = pieceStart + buffer.length;
@@ -124,9 +125,9 @@ public final class FileStorage implements Storage {
     }
 
     /**
-     * 從磁碟讀取全域位移 globalStart 起的 out.length bytes（只跨勾選檔案）。回傳實際填入數。
+     * Read out.length bytes from disk starting at global offset globalStart (spanning selected files only). Returns the number of bytes actually filled.
      *
-     * @param createIfMissing false 時（recheck 掃描）不建立不存在的檔案，缺檔即視為讀不到
+     * @param createIfMissing when false (recheck scan), do not create missing files; a missing file is treated as unreadable
      */
     private int readFromFiles(long globalStart, byte[] out, boolean createIfMissing) throws IOException {
         int filled = 0;
@@ -144,14 +145,14 @@ public final class FileStorage implements Storage {
             }
             FileChannel channel = channel(file, createIfMissing);
             if (channel == null) {
-                return filled; // 檔案不存在（recheck 掃描時）→ 此 piece 不完整
+                return filled; // file does not exist (during recheck scan) -> this piece is incomplete
             }
             ByteBuffer slice = ByteBuffer.wrap(out, (int) (overlapStart - globalStart), (int) (overlapEnd - overlapStart));
             long position = overlapStart - fileStart;
             while (slice.hasRemaining()) {
                 int n = channel.read(slice, position);
                 if (n < 0) {
-                    return filled; // 檔案比預期短（不完整）
+                    return filled; // file is shorter than expected (incomplete)
                 }
                 position += n;
             }
@@ -164,7 +165,7 @@ public final class FileStorage implements Storage {
         try {
             return java.security.MessageDigest.getInstance("SHA-1").digest(data);
         } catch (java.security.NoSuchAlgorithmException e) {
-            throw new AssertionError("JDK 必定內建 SHA-1", e);
+            throw new AssertionError("SHA-1 is always built into the JDK", e);
         }
     }
 
@@ -172,7 +173,7 @@ public final class FileStorage implements Storage {
         return channel(file, true);
     }
 
-    /** @param createIfMissing false 且檔案尚未開啟／不存在時回傳 null（不建立檔案） */
+    /** @param createIfMissing when false and the file is not yet open / does not exist, returns null (does not create the file) */
     private FileChannel channel(FileEntry file, boolean createIfMissing) throws IOException {
         FileChannel existing = channels.get(file.index());
         if (existing != null) {
@@ -204,13 +205,13 @@ public final class FileStorage implements Storage {
             if (completed.get(p)) {
                 continue;
             }
-            // 只有整個 piece 都落在勾選檔案內才能從磁碟驗證；邊界 piece 一律重新下載
+            // A piece can be verified from disk only if it lies entirely within selected files; boundary pieces are always re-downloaded
             if (selection.wantedBytesInPiece(p) != metainfo.pieceLengthAt(p)) {
                 continue;
             }
             byte[] buffer = new byte[metainfo.pieceLengthAt(p)];
             if (readFromFiles((long) p * metainfo.pieceLength(), buffer, false) != buffer.length) {
-                continue; // 檔案不存在或不完整
+                continue; // file does not exist or is incomplete
             }
             if (java.util.Arrays.equals(sha1(buffer), metainfo.pieceHash(p))) {
                 completed.set(p);

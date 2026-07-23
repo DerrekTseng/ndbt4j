@@ -5,7 +5,7 @@ import java.util.List;
 import net.derrek.bt4j.session.SessionState;
 import net.derrek.bt4j.session.TorrentSession;
 
-/** {@link TorrentDownloadTask} 的實作，包裝執行中的 {@link TorrentSession}。全 getter。 */
+/** Implementation of {@link TorrentDownloadTask}, wrapping a running {@link TorrentSession}. All getters. */
 final class TorrentDownloadTaskImpl implements TorrentDownloadTask {
 
     final TorrentSession session;

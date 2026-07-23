@@ -6,7 +6,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 
-/** 測試用假 HTTP tracker：對任何 announce 回覆 compact 格式的固定 peer（127.0.0.1:peerPort）。 */
+/** Fake HTTP tracker for tests: replies to any announce with a fixed peer in compact format (127.0.0.1:peerPort). */
 public final class FakeHttpTracker implements AutoCloseable {
 
     private final HttpServer server;

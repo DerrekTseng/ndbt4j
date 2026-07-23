@@ -23,7 +23,7 @@ import net.derrek.bt4j.peer.PeerId;
 import net.derrek.bt4j.peer.PeerMessage;
 import org.junit.jupiter.api.Test;
 
-/** 以 ExtensionRegistry.dispatch 直接注入訊息，驗證 BEP 9 組裝與防偽邏輯（不經網路）。 */
+/** Injects messages directly via ExtensionRegistry.dispatch to verify BEP 9 assembly and anti-forgery logic (without going over the network). */
 class MetadataExchangeTest {
 
     private static final PeerConnection.Listener NOOP = new PeerConnection.Listener() {
@@ -54,14 +54,14 @@ class MetadataExchangeTest {
         return new BValue.BDictionary(map);
     }
 
-    /** 對方的 extension handshake（宣告 ut_metadata id=7 與 metadata_size）。 */
+    /** The peer's extension handshake (announces ut_metadata id=7 and metadata_size). */
     private static PeerMessage.Extended peerHandshake(int metadataSize) {
         return new PeerMessage.Extended(0, Bencode.encode(dict(
                 "m", dict("ut_metadata", new BValue.BInteger(7)),
                 "metadata_size", new BValue.BInteger(metadataSize))));
     }
 
-    /** 對方送來的 data 訊息（本端宣告的 ut_metadata id = 1）。 */
+    /** A data message sent by the peer (our locally announced ut_metadata id = 1). */
     private static PeerMessage.Extended dataMessage(byte[] infoBytes, int piece) {
         int start = piece * MetadataExchange.PIECE_SIZE;
         byte[] data = Arrays.copyOfRange(infoBytes, start,
@@ -76,9 +76,9 @@ class MetadataExchangeTest {
         return new PeerMessage.Extended(1, payload);
     }
 
-    /** 產生大於 16 KiB 的 info 字典（多 piece metadata）。 */
+    /** Produces an info dictionary larger than 16 KiB (multi-piece metadata). */
     private static Metainfo bigMetainfo() {
-        // 1200 個 piece hash = 24000 bytes 的 pieces 欄位 → info dict 超過一個 metadata piece
+        // 1200 piece hashes = a 24000-byte pieces field -> info dict exceeds one metadata piece
         int pieceLength = 16384;
         byte[] content = TorrentFixtures.randomBytes(pieceLength * 2, 5);
         var files = new java.util.ArrayList<TorrentFixtures.TestFile>();
@@ -93,7 +93,7 @@ class MetadataExchangeTest {
     void assemblesMultiPieceMetadataAndVerifiesHash() throws Exception {
         Metainfo meta = bigMetainfo();
         byte[] infoBytes = meta.infoDictBytes();
-        assertTrue(infoBytes.length > MetadataExchange.PIECE_SIZE, "測試資料應超過一個 metadata piece");
+        assertTrue(infoBytes.length > MetadataExchange.PIECE_SIZE, "test data should exceed one metadata piece");
 
         MetadataExchange exchange = new MetadataExchange(meta.infoHash());
         ExtensionRegistry registry = new ExtensionRegistry(List.of(exchange));
@@ -118,7 +118,7 @@ class MetadataExchangeTest {
                 TorrentFixtures.randomBytes(16384, 6), 16384, "http://t/a");
         byte[] infoBytes = meta.infoDictBytes();
         byte[] forged = infoBytes.clone();
-        forged[10] ^= 0x01; // 竄改一個 byte，SHA-1 必不符
+        forged[10] ^= 0x01; // tamper with one byte so the SHA-1 must not match
 
         MetadataExchange exchange = new MetadataExchange(meta.infoHash());
         ExtensionRegistry registry = new ExtensionRegistry(List.of(exchange));
@@ -126,9 +126,9 @@ class MetadataExchangeTest {
 
         registry.dispatch(conn, peerHandshake(forged.length));
         registry.dispatch(conn, dataMessage(forged, 0));
-        assertFalse(exchange.metadata().isDone(), "偽造的 metadata 不得通過驗證");
+        assertFalse(exchange.metadata().isDone(), "forged metadata must not pass verification");
 
-        // 換一個誠實的 peer：重新 handshake 後送正確資料 → 成功
+        // switch to an honest peer: re-handshake then send correct data -> success
         registry.dispatch(conn, peerHandshake(infoBytes.length));
         registry.dispatch(conn, dataMessage(infoBytes, 0));
         assertTrue(exchange.metadata().isDone());

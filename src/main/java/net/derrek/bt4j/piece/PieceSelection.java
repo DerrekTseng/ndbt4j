@@ -5,11 +5,12 @@ import net.derrek.bt4j.metainfo.FileEntry;
 import net.derrek.bt4j.metainfo.Metainfo;
 
 /**
- * 「勾選的檔案」→「需要下載的 piece 集合」的換算。不可變。
+ * Conversion from "selected files" to "the set of pieces that must be downloaded". Immutable.
  *
- * piece 是跨檔案連續切割的：勾選檔案的頭尾 piece 可能與未勾選檔案共用，
- * 這些邊界 piece 仍須完整下載（否則無法驗證 hash），
- * 但只有屬於勾選檔案的位元組會寫入磁碟（見 storage.FileStorage）。
+ * Pieces are cut contiguously across files: the first and last piece of a selected file may be
+ * shared with unselected files. These boundary pieces still must be downloaded in full (otherwise
+ * the hash cannot be verified), but only the bytes belonging to selected files are written to disk
+ * (see storage.FileStorage).
  */
 public final class PieceSelection {
 
@@ -49,19 +50,19 @@ public final class PieceSelection {
     }
 
     /**
-     * @param selectedFileIndices 勾選的檔案 index（FileEntry.index）；空集合＝全選
-     * @throws IllegalArgumentException index 超出範圍
+     * @param selectedFileIndices indices of selected files (FileEntry.index); empty set = select all
+     * @throws IllegalArgumentException if an index is out of range
      */
     public static PieceSelection of(Metainfo metainfo, Set<Integer> selectedFileIndices) {
         for (int index : selectedFileIndices) {
             if (index < 0 || index >= metainfo.files().size()) {
-                throw new IllegalArgumentException("檔案 index 超出範圍: " + index);
+                throw new IllegalArgumentException("file index out of range: " + index);
             }
         }
         return new PieceSelection(metainfo, Set.copyOf(selectedFileIndices));
     }
 
-    /** 此 piece 是否在需求集合內（與任一勾選檔案有位元組重疊）。 */
+    /** Whether this piece is in the wanted set (overlaps in bytes with any selected file). */
     public boolean isWanted(int pieceIndex) {
         return wantedPieces.get(pieceIndex);
     }
@@ -70,22 +71,22 @@ public final class PieceSelection {
         return fileWanted[fileIndex];
     }
 
-    /** 需求集合的 bitfield 形式（copy），供進度計算與 picker 使用。 */
+    /** The wanted set as a bitfield (a copy), for progress calculation and the picker. */
     public Bitfield wantedPieces() {
         return wantedPieces.copy();
     }
 
-    /** 需求 piece 的總數。 */
+    /** Total number of wanted pieces. */
     public int wantedPieceCount() {
         return wantedPieces.cardinality();
     }
 
-    /** 需求集合的總位元組數（僅計勾選檔案的位元組，進度分母）。 */
+    /** Total byte count of the wanted set (counting only selected files' bytes, the progress denominator). */
     public long wantedBytes() {
         return wantedBytes;
     }
 
-    /** 此 piece 中屬於勾選檔案的位元組數（進度分子的增量）。 */
+    /** Number of bytes in this piece that belong to selected files (the increment to the progress numerator). */
     public long wantedBytesInPiece(int pieceIndex) {
         return wantedBytesPerPiece[pieceIndex];
     }

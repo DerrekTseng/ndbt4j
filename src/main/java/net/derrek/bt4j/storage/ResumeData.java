@@ -15,18 +15,18 @@ import net.derrek.bt4j.metainfo.Metainfo;
 import net.derrek.bt4j.piece.Bitfield;
 
 /**
- * resume 資料：伺服器重啟後恢復 session 所需的完整、自足狀態。
- * 內嵌 .torrent 位元組（磁力連結取得的 metadata 也已轉為 .torrent 形式），
- * 因此單一 resume 檔即可完整還原一個 session，不需另存 .torrent。
- * 以 bencoding 序列化（沿用自家編碼器，不引入其他格式）。
+ * Resume data: the complete, self-contained state needed to restore a session after a server restart.
+ * The .torrent bytes are embedded (metadata obtained from a magnet link is also converted to .torrent form),
+ * so a single resume file can fully restore a session without a separate .torrent.
+ * Serialized with bencoding (reusing our own encoder, without introducing another format).
  *
- * @param torrentBytes        內嵌的 metainfo（standard .torrent bytes）
- * @param completedPieces     已驗證完成的 piece
- * @param selectedFileIndices 使用者勾選的檔案（空集合＝全選）
- * @param saveTo              下載目的地
- * @param uploaded            累計上傳量（統計沿續）
- * @param seedingStopped      使用者是否已手動關閉上傳
- * @param seedAfterComplete   下載完成後是否做種
+ * @param torrentBytes        the embedded metainfo (standard .torrent bytes)
+ * @param completedPieces     pieces that have been verified as complete
+ * @param selectedFileIndices files selected by the user (empty set = all selected)
+ * @param saveTo              download destination
+ * @param uploaded            cumulative upload amount (statistics carried over)
+ * @param seedingStopped      whether the user has manually stopped uploading
+ * @param seedAfterComplete   whether to seed after the download completes
  */
 public record ResumeData(byte[] torrentBytes,
                          Bitfield completedPieces,
@@ -36,7 +36,7 @@ public record ResumeData(byte[] torrentBytes,
                          boolean seedingStopped,
                          boolean seedAfterComplete) {
 
-    /** 解析內嵌的 metainfo。 */
+    /** Parse the embedded metainfo. */
     public Metainfo metainfo() {
         return Metainfo.parse(torrentBytes);
     }
@@ -53,13 +53,13 @@ public record ResumeData(byte[] torrentBytes,
         return decode(Files.readAllBytes(file));
     }
 
-    /** 序列化為 bencoded 位元組。 */
+    /** Serialize to bencoded bytes. */
     public byte[] encode() {
         List<BValue> selected = selectedFileIndices.stream()
                 .sorted()
                 .map(i -> (BValue) new BValue.BInteger(i))
                 .toList();
-        // TreeMap 讓 bencode 的 dict key 天然排序
+        // TreeMap gives the bencode dict keys their natural ordering
         SequencedMap<BValue.BString, BValue> map = new TreeMap<>(
                 (a, b) -> java.util.Arrays.compareUnsigned(a.bytes(), b.bytes()));
         map.put(BValue.BString.of("torrent"), new BValue.BString(torrentBytes));
@@ -74,7 +74,7 @@ public record ResumeData(byte[] torrentBytes,
 
     public static ResumeData decode(byte[] data) {
         if (!(Bencode.decode(data) instanceof BValue.BDictionary dict)) {
-            throw new IllegalArgumentException("resume 資料頂層必須是 dictionary");
+            throw new IllegalArgumentException("resume data top level must be a dictionary");
         }
         byte[] torrentBytes = requireString(dict, "torrent");
         Metainfo metainfo = Metainfo.parse(torrentBytes);
@@ -102,6 +102,6 @@ public record ResumeData(byte[] torrentBytes,
         if (dict.get(key).orElse(null) instanceof BValue.BString(byte[] bytes)) {
             return bytes;
         }
-        throw new IllegalArgumentException("resume 資料缺少欄位: " + key);
+        throw new IllegalArgumentException("resume data missing field: " + key);
     }
 }

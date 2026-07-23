@@ -24,8 +24,8 @@ class RoutingTableTest {
     void insertAndClosestOrdering() {
         NodeId self = idWithFirstByte(0x00, 0);
         RoutingTable table = new RoutingTable(self);
-        NodeId near = idWithFirstByte(0x01, 1);   // 距 self 很近
-        NodeId far = idWithFirstByte(0x80, 2);    // 最高位不同 = 最遠
+        NodeId near = idWithFirstByte(0x01, 1);   // very close to self
+        NodeId far = idWithFirstByte(0x80, 2);    // top bit differs = farthest
         table.insert(node(near, 1));
         table.insert(node(far, 2));
 
@@ -58,11 +58,11 @@ class RoutingTableTest {
     void bucketCapsAtKFreshNodes() {
         NodeId self = idWithFirstByte(0x00, 0);
         RoutingTable table = new RoutingTable(self);
-        // 12 個節點同一個 bucket（最高位都不同於 self 的 bit 159）
+        // 12 nodes in the same bucket (top bit all differs from self's bit 159)
         for (int i = 0; i < 12; i++) {
             table.insert(node(idWithFirstByte(0x80, i), i + 1));
         }
-        assertEquals(RoutingTable.K, table.size()); // 新鮮節點滿了就丟棄新的
+        assertEquals(RoutingTable.K, table.size()); // once full of fresh nodes, new ones are dropped
         assertTrue(table.closest(self, 20).size() == RoutingTable.K);
     }
 }

@@ -1,23 +1,23 @@
 package net.derrek.bt4j.session;
 
 /**
- * TorrentSession 狀態機。
+ * TorrentSession state machine.
  * <pre>
  * addMagnet ─→ FETCHING_METADATA ─→ METADATA_READY ─ start() ─→ DOWNLOADING ─→ SEEDING
  * addTorrent ─────────────────────→       │                        │              │
  *                                          └── close() ──→ STOPPED ←─ stopSeeding()┘
- * 任何狀態發生不可恢復錯誤 ─→ ERROR
+ * An unrecoverable error in any state ─→ ERROR
  * </pre>
  */
 public enum SessionState {
-    /** 磁力連結：正在向 swarm 取得 metadata。 */
+    /** Magnet link: fetching metadata from the swarm. */
     FETCHING_METADATA,
-    /** metadata 已就緒，等待上層呼叫 start()（UI 勾選檔案階段）。 */
+    /** Metadata is ready, waiting for the caller to invoke start() (the UI file-selection stage). */
     METADATA_READY,
     DOWNLOADING,
-    /** 下載完成，持續上傳。 */
+    /** Download complete, continuing to upload. */
     SEEDING,
-    /** 已停止（stopSeeding 或 close）。 */
+    /** Stopped (via stopSeeding or close). */
     STOPPED,
     ERROR
 }

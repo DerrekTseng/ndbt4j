@@ -10,10 +10,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
 /**
- * 真實世界驗收（需網路，預設不執行）：
- * 使用者提供的無 tracker 磁力連結（doc/TEST-MAGNETS.md 第 2 組，健康 swarm），
- * 純靠公共 DHT 找 peer 並以 BEP 9 取得 metadata（不下載內容本體）。
- * 執行方式：{@code mvn test -Dbt4j.integration=true -Dtest=DhtRealWorldIntegrationTest}
+ * Real-world acceptance (requires network, disabled by default):
+ * A trackerless magnet link supplied by the user (doc/TEST-MAGNETS.md set 2, a healthy swarm),
+ * relying purely on the public DHT to find peers and fetching metadata via BEP 9 (without downloading the content itself).
+ * How to run: {@code mvn test -Dbt4j.integration=true -Dtest=DhtRealWorldIntegrationTest}
  */
 @EnabledIfSystemProperty(named = "bt4j.integration", matches = "true")
 class DhtRealWorldIntegrationTest {
@@ -29,7 +29,7 @@ class DhtRealWorldIntegrationTest {
             assertEquals(InfoHash.fromHex("617361908edde0130fb9e2ed9b854c1fcc467409"), metadata.infoHash());
             assertFalse(metadata.name().isEmpty());
             assertFalse(metadata.files().isEmpty());
-            System.out.println("[DHT 整合測試] 取得 metadata: name=" + metadata.name()
+            System.out.println("[DHT integration test] got metadata: name=" + metadata.name()
                     + ", files=" + metadata.files().size()
                     + ", totalLength=" + metadata.totalLength());
         }

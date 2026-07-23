@@ -1,25 +1,25 @@
 package net.derrek.bt4j;
 
 /**
- * 單一檔案的下載進度（{@link TorrentDownloadTask#fileProgress()} 的元素）。
- * 全 getter、可安全輪詢。
+ * Download progress of a single file (an element of {@link TorrentDownloadTask#fileProgress()}).
+ * All getters, safely pollable.
  *
- * 註：跨檔案共用的邊界 piece 完成前，兩側檔案的進度都可能略有延後，屬正常。
+ * Note: before a boundary piece shared across files is complete, the progress of both adjacent files may lag slightly; this is normal.
  */
 public interface TorrentFileProgress {
 
-    /** 對應的檔案。 */
+    /** The corresponding file. */
     TorrentContentFile file();
 
-    /** 此檔已下載並驗證的位元組數。 */
+    /** Bytes of this file downloaded and verified. */
     long downloadedBytes();
 
-    /** 此檔總大小（= file().size()）。 */
+    /** Total size of this file (= file().size()). */
     long totalBytes();
 
-    /** 0.0 ~ 1.0。 */
+    /** 0.0 ~ 1.0. */
     double progress();
 
-    /** 此檔是否全部完成。 */
+    /** Whether this file is fully complete. */
     boolean completed();
 }

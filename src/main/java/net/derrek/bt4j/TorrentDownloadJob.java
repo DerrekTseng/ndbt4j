@@ -4,26 +4,26 @@ import java.nio.file.Path;
 import java.util.List;
 
 /**
- * 一個下載任務的持久描述，對應目標目錄下的 {@code .bt4j} 檔。
+ * Persistent description of a download task, corresponding to the {@code .bt4j} file in the target directory.
  *
- * 由 {@link Bt#createDownloadJob}（新任務，當場建立 .bt4j）或
- * {@link Bt#restoreDownloadJob}（讀取既有 .bt4j 續傳）產生。
- * 傳給 {@link Bt#download} 才真正開始執行。
+ * Produced by {@link Bt#createDownloadJob} (new task, creates .bt4j on the spot) or
+ * {@link Bt#restoreDownloadJob} (reads an existing .bt4j to resume).
+ * Actually starts running only when passed to {@link Bt#download}.
  */
 public interface TorrentDownloadJob {
 
-    /** 所屬 torrent 內容。 */
+    /** The torrent content it belongs to. */
     TorrentContent content();
 
-    /** 下載目標目錄（.bt4j 檔即位於此）。 */
+    /** Download target directory (where the .bt4j file lives). */
     Path targetDirectory();
 
-    /** 勾選要下載的檔案（restore 時由 .bt4j 還原）。 */
+    /** Files selected for download (restored from .bt4j when restoring). */
     List<TorrentContentFile> selectedFiles();
 
-    /** 下載完成後是否移入做種列表。 */
+    /** Whether to move into the seeding list after download completes. */
     boolean seedAfterComplete();
 
-    /** 已完成並驗證的位元組數（新任務為 0；restore 為既有進度）。 */
+    /** Bytes completed and verified (0 for a new task; existing progress when restoring). */
     long completedBytes();
 }

@@ -3,16 +3,16 @@ package net.derrek.bt4j.metainfo;
 import java.util.List;
 
 /**
- * torrent 內的單一檔案。
+ * A single file within a torrent.
  *
- * @param index  在 torrent 中的序號（0-based），UI 勾選檔案與 DownloadPlan 以此為準
- * @param path   相對路徑（單檔 torrent 為 [name]，多檔為 [name, dir..., file]）
- * @param length 檔案長度（bytes）
- * @param offset 此檔案在「全 torrent 連續位元組空間」的起始位移，用於 piece ↔ 檔案對映
+ * @param index  index within the torrent (0-based); used by UI file selection and DownloadPlan
+ * @param path   relative path (single-file torrent: [name]; multi-file: [name, dir..., file])
+ * @param length file length (bytes)
+ * @param offset the file's start offset within the torrent's contiguous byte space, used for piece ↔ file mapping
  */
 public record FileEntry(int index, List<String> path, long length, long offset) {
 
-    /** 以 '/' 串接的顯示用相對路徑。 */
+    /** Relative path for display, joined with '/'. */
     public String displayPath() {
         return String.join("/", path);
     }

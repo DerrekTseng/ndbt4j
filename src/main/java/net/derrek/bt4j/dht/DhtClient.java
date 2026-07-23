@@ -31,19 +31,19 @@ import net.derrek.bt4j.metainfo.InfoHash;
 import net.derrek.bt4j.peer.PeerAddress;
 
 /**
- * DHT 客戶端（BEP 5）：單一 DatagramSocket 上的 KRPC，
- * 全域一個實例，所有 torrent 共用。
- * 對外能力：找 peer（迭代 get_peers）、宣告自己是 peer（announce_peer）；
- * 同時回應他人的 ping / find_node / get_peers / announce_peer（好公民）。
+ * DHT client (BEP 5): KRPC over a single DatagramSocket,
+ * one global instance shared by all torrents.
+ * Outbound capabilities: find peers (iterative get_peers), announce self as a peer (announce_peer);
+ * also responds to others' ping / find_node / get_peers / announce_peer (good citizen).
  */
 public final class DhtClient implements AutoCloseable {
 
     private static final System.Logger LOG = System.getLogger(DhtClient.class.getName());
 
     /**
-     * 預設 bootstrap 節點（僅冷啟動時使用；路由表應隨 resume 資料持久化，
-     * 重啟後以既有節點暖機，降低對公共節點的依賴）。
-     * 全部以 unresolved 建立，實際解析延後到啟動時（DNS 失敗個別忽略）。
+     * Default bootstrap nodes (used only on a cold start; the routing table should be persisted
+     * with resume data so a restart can warm up from existing nodes, reducing reliance on public nodes).
+     * All created as unresolved; actual resolution is deferred to startup (individual DNS failures ignored).
      */
     public static final List<InetSocketAddress> DEFAULT_BOOTSTRAP_NODES = List.of(
             InetSocketAddress.createUnresolved("router.bittorrent.com", 6881),
@@ -52,11 +52,11 @@ public final class DhtClient implements AutoCloseable {
             InetSocketAddress.createUnresolved("dht.libtorrent.org", 25401),
             InetSocketAddress.createUnresolved("router.bitcomet.com", 6881));
 
-    private static final int ALPHA = 3;                       // 每輪平行查詢數
+    private static final int ALPHA = 3;                       // parallel queries per round
     private static final Duration QUERY_TIMEOUT = Duration.ofSeconds(2);
     private static final int MAX_LOOKUP_ROUNDS = 16;
-    private static final int ENOUGH_PEERS = 100;              // 單次 lookup 收集上限
-    private static final int MAX_STORED_HASHES = 1000;        // server 端 peer store 防灌爆
+    private static final int ENOUGH_PEERS = 100;              // collection cap for a single lookup
+    private static final int MAX_STORED_HASHES = 1000;        // server-side peer store flood protection
     private static final int MAX_STORED_PEERS_PER_HASH = 300;
     private static final long TOKEN_EPOCH_MILLIS = 5 * 60_000;
 
@@ -73,24 +73,24 @@ public final class DhtClient implements AutoCloseable {
     private volatile DatagramSocket socket;
     private volatile boolean closed;
 
-    /** @param udpPort 0 = 由系統指派 */
+    /** @param udpPort 0 = assigned by the system */
     public DhtClient(int udpPort, List<InetSocketAddress> bootstrapNodes) {
         this.requestedUdpPort = udpPort;
         this.bootstrapNodes = List.copyOf(bootstrapNodes);
     }
 
-    /** 啟動：綁定 socket、開始收包、背景對 bootstrap 節點填充路由表。 */
+    /** Start: bind the socket, begin receiving packets, and populate the routing table from bootstrap nodes in the background. */
     public void start() {
         try {
             this.socket = new DatagramSocket(requestedUdpPort);
         } catch (SocketException e) {
-            throw new UncheckedIOException(new IOException("DHT UDP port 綁定失敗: " + requestedUdpPort, e));
+            throw new UncheckedIOException(new IOException("failed to bind DHT UDP port: " + requestedUdpPort, e));
         }
         Thread.ofVirtual().name("bt4j-dht-recv").start(this::receiveLoop);
         Thread.ofVirtual().name("bt4j-dht-bootstrap").start(this::bootstrap);
     }
 
-    /** 實際綁定的 UDP port（start 之後有效）。 */
+    /** The actually bound UDP port (valid after start). */
     public int port() {
         return socket.getLocalPort();
     }
@@ -99,22 +99,22 @@ public final class DhtClient implements AutoCloseable {
         return self;
     }
 
-    /** 路由表目前的節點數（診斷用）。 */
+    /** Current number of nodes in the routing table (for diagnostics). */
     public int routingTableSize() {
         return table.size();
     }
 
-    /** 等待 bootstrap 完成（首輪填表結束；不保證表非空）。 */
+    /** Wait for bootstrap to finish (end of the first fill round; does not guarantee a non-empty table). */
     public boolean awaitBootstrap(Duration timeout) throws InterruptedException {
         return bootstrapped.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     private void bootstrap() {
         try {
-            // 以自身 id 做一次 lookup：對 bootstrap 節點 get_peers，回應者依序填入路由表
+            // Do one lookup on our own id: get_peers against bootstrap nodes, responders fill the routing table in order
             lookup(new InfoHash(self.bytes()), null);
         } catch (RuntimeException ignored) {
-            // 離線環境：表維持空，之後的 lookup 仍會嘗試 bootstrap 位址
+            // Offline environment: the table stays empty; later lookups still try the bootstrap addresses
         } finally {
             bootstrapped.countDown();
             LOG.log(System.Logger.Level.DEBUG, () -> "DHT bootstrap done, routing table has " + table.size() + " nodes");
@@ -122,7 +122,8 @@ public final class DhtClient implements AutoCloseable {
     }
 
     /**
-     * 迭代 get_peers 查詢。future 在查詢收斂時完成；找不到以空清單完成（不以例外表示死種）。
+     * Iterative get_peers query. The future completes when the query converges; if none are found it completes
+     * with an empty list (a dead torrent is not signaled by an exception).
      */
     public CompletableFuture<List<PeerAddress>> findPeers(InfoHash infoHash) {
         CompletableFuture<List<PeerAddress>> future = new CompletableFuture<>();
@@ -136,7 +137,7 @@ public final class DhtClient implements AutoCloseable {
         return future;
     }
 
-    /** 對負責節點 announce_peer，宣告本機在 tcpPort 提供此 torrent。 */
+    /** announce_peer to the responsible nodes, declaring that this host serves this torrent on tcpPort. */
     public CompletableFuture<Void> announce(InfoHash infoHash, int tcpPort) {
         CompletableFuture<Void> future = new CompletableFuture<>();
         Thread.ofVirtual().name("bt4j-dht-announce").start(() -> {
@@ -149,17 +150,17 @@ public final class DhtClient implements AutoCloseable {
         return future;
     }
 
-    /** 把一個候選節點（例如 peer 的 PORT 訊息）ping 進路由表。 */
+    /** ping a candidate node (e.g. from a peer's PORT message) into the routing table. */
     public void addNode(InetSocketAddress address) {
-        query(address, "ping", new LinkedHashMap<>()); // 回應時 receiveLoop 會自動入表
+        query(address, "ping", new LinkedHashMap<>()); // on reply, receiveLoop inserts it into the table automatically
     }
 
-    // ---- 迭代查詢 ----
+    // ---- iterative lookup ----
 
     private record Candidate(InetSocketAddress address, NodeId id) {
     }
 
-    /** 同步迭代查詢。announceTcpPort 非 null 時，收斂後對最近的持 token 節點 announce_peer。 */
+    /** Synchronous iterative lookup. When announceTcpPort is non-null, after convergence announce_peer to the closest token-holding nodes. */
     private List<PeerAddress> lookup(InfoHash target, Integer announceTcpPort) {
         NodeId targetId = NodeId.of(target);
         Comparator<Candidate> byDistance = (a, b) -> {
@@ -208,7 +209,7 @@ public final class DhtClient implements AutoCloseable {
                 try {
                     r = futures.get(i).join();
                 } catch (RuntimeException e) {
-                    continue; // 逾時或錯誤：略過此節點
+                    continue; // timeout or error: skip this node
                 }
                 InetSocketAddress from = batch.get(i).address();
                 if (r.get("id").orElse(null) instanceof BValue.BString(byte[] id) && id.length == 20) {
@@ -268,9 +269,9 @@ public final class DhtClient implements AutoCloseable {
         }
     }
 
-    // ---- KRPC 收發 ----
+    // ---- KRPC send/receive ----
 
-    /** 送出 query（自動附上本機 id），回傳的 future 於回應/錯誤/逾時時完成。 */
+    /** Send a query (our own id attached automatically); the returned future completes on response/error/timeout. */
     private CompletableFuture<BValue.BDictionary> query(InetSocketAddress to, String method,
                                                         SequencedMap<BValue.BString, BValue> args) {
         int n = transactionCounter.incrementAndGet();
@@ -311,7 +312,7 @@ public final class DhtClient implements AutoCloseable {
                 switch (message) {
                     case KrpcMessage.Response(byte[] t, BValue.BDictionary r) -> {
                         if (r.get("id").orElse(null) instanceof BValue.BString(byte[] id) && id.length == 20) {
-                            table.insert(new DhtNode(new NodeId(id), from)); // 回應過 = 活節點
+                            table.insert(new DhtNode(new NodeId(id), from)); // has responded = live node
                         }
                         CompletableFuture<BValue.BDictionary> future = pending.remove(HexFormat.of().formatHex(t));
                         if (future != null) {
@@ -327,12 +328,12 @@ public final class DhtClient implements AutoCloseable {
                     case KrpcMessage.Query query -> handleQuery(query, from);
                 }
             } catch (RuntimeException ignored) {
-                // 格式錯誤的封包：忽略
+                // malformed packet: ignore
             }
         }
     }
 
-    // ---- server 端 ----
+    // ---- server side ----
 
     private void handleQuery(KrpcMessage.Query query, InetSocketAddress from) {
         BValue.BDictionary args = query.arguments();
@@ -429,7 +430,7 @@ public final class DhtClient implements AutoCloseable {
         return map;
     }
 
-    /** token = SHA1(secret || 5分鐘紀元 || 來源 IP)；epochOffset -1 = 上一紀元（換發期仍有效）。 */
+    /** token = SHA1(secret || 5-minute epoch || source IP); epochOffset -1 = previous epoch (still valid during rollover). */
     private byte[] makeToken(InetSocketAddress from, int epochOffset) {
         long epoch = System.currentTimeMillis() / TOKEN_EPOCH_MILLIS + epochOffset;
         try {
@@ -441,7 +442,7 @@ public final class DhtClient implements AutoCloseable {
             sha1.update(from.getAddress().getAddress());
             return sha1.digest();
         } catch (NoSuchAlgorithmException e) {
-            throw new AssertionError("JDK 必定內建 SHA-1", e);
+            throw new AssertionError("SHA-1 is always built into the JDK", e);
         }
     }
 

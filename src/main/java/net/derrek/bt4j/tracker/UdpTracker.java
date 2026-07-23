@@ -14,9 +14,9 @@ import java.util.Arrays;
 import java.util.OptionalInt;
 
 /**
- * UDP tracker（BEP 15）：connect → announce 二段式。
- * connection id 快取 60 秒（過期重新 connect）；逾時逐次翻倍重送。
- * 執行緒安全（announce 整段同步）。
+ * UDP tracker (BEP 15): a two-stage connect → announce.
+ * The connection id is cached for 60 seconds (reconnect on expiry); on timeout, retransmit with doubling backoff.
+ * Thread-safe (the whole announce is synchronized).
  */
 public final class UdpTracker implements Tracker {
 
@@ -26,14 +26,14 @@ public final class UdpTracker implements Tracker {
     private static final int ACTION_CONNECT = 0;
     private static final int ACTION_ANNOUNCE = 1;
     private static final int ACTION_ERROR = 3;
-    private static final long CONNECTION_ID_LIFETIME_MILLIS = 50_000; // BEP 15 定 60s，保守取 50s
+    private static final long CONNECTION_ID_LIFETIME_MILLIS = 50_000; // BEP 15 specifies 60s; conservatively use 50s
     private static final int[] DEFAULT_TIMEOUTS_MILLIS = {5_000, 10_000, 20_000};
 
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final URI uri;
     private final int[] timeoutsMillis;
-    private final int key = RANDOM.nextInt(); // BEP 15：同一 client 換 IP 時的識別
+    private final int key = RANDOM.nextInt(); // BEP 15: identifies the same client when its IP changes
 
     private DatagramSocket socket;
     private long connectionId;
@@ -43,10 +43,10 @@ public final class UdpTracker implements Tracker {
         this(uri, DEFAULT_TIMEOUTS_MILLIS);
     }
 
-    /** 測試用：自訂重送逾時序列。 */
+    /** For testing: custom retransmit timeout sequence. */
     UdpTracker(URI uri, int[] timeoutsMillis) {
         if (uri.getPort() < 0) {
-            throw new IllegalArgumentException("UDP tracker 必須指定 port: " + uri);
+            throw new IllegalArgumentException("UDP tracker must specify a port: " + uri);
         }
         this.uri = uri;
         this.timeoutsMillis = timeoutsMillis.clone();
@@ -62,7 +62,7 @@ public final class UdpTracker implements Tracker {
         try {
             InetSocketAddress target = new InetSocketAddress(uri.getHost(), uri.getPort());
             if (target.isUnresolved()) {
-                throw new TrackerException("無法解析 tracker 主機: " + uri);
+                throw new TrackerException("could not resolve tracker host: " + uri);
             }
             ensureSocket();
             ensureConnection(target);
@@ -71,7 +71,7 @@ public final class UdpTracker implements Tracker {
                     + result.peers().size() + " peers (interval=" + result.interval().toSeconds() + "s)");
             return result;
         } catch (IOException e) {
-            throw new TrackerException("UDP tracker 通訊失敗: " + uri, e);
+            throw new TrackerException("UDP tracker communication failed: " + uri, e);
         }
     }
 
@@ -109,7 +109,7 @@ public final class UdpTracker implements Tracker {
         packet.putLong(request.left());
         packet.putLong(request.uploaded());
         packet.putInt(eventCode(request.event()));
-        packet.putInt(0);                    // IP：0 = 由 tracker 取來源位址
+        packet.putInt(0);                    // IP: 0 = let the tracker use the source address
         packet.putInt(key);
         packet.putInt(request.numWant() <= 0 ? -1 : request.numWant());
         packet.putShort((short) request.port());
@@ -126,12 +126,12 @@ public final class UdpTracker implements Tracker {
                 net.derrek.bt4j.peer.PeerAddress.fromCompact(trimToStride(compact)));
     }
 
-    /** 尾端不足 6 bytes 的殘餘（不合規 tracker）直接捨棄。 */
+    /** Discards a trailing remainder of fewer than 6 bytes (from a non-compliant tracker). */
     private static byte[] trimToStride(byte[] compact) {
         return compact.length % 6 == 0 ? compact : Arrays.copyOf(compact, compact.length - compact.length % 6);
     }
 
-    /** 送出並等待回應；逾時依序列重送；action=3（error）轉為 TrackerException。 */
+    /** Sends and waits for a response; retransmits per the timeout sequence; action=3 (error) becomes a TrackerException. */
     private ByteBuffer exchange(InetSocketAddress target, byte[] packet, int expectedTransactionId,
                                 int expectedAction, int minLength) throws IOException, TrackerException {
         byte[] receiveBuffer = new byte[4096];
@@ -144,20 +144,20 @@ public final class UdpTracker implements Tracker {
                 try {
                     socket.receive(received);
                 } catch (SocketTimeoutException e) {
-                    break; // 本輪逾時 → 重送
+                    break; // this round timed out -> retransmit
                 }
                 if (received.getLength() < 8) {
-                    continue; // 雜訊
+                    continue; // noise
                 }
                 ByteBuffer response = ByteBuffer.wrap(receiveBuffer, 0, received.getLength()).slice();
                 int action = response.getInt(0);
                 int transactionId = response.getInt(4);
                 if (transactionId != expectedTransactionId) {
-                    continue; // 不是這筆交易（過期回應）
+                    continue; // not this transaction (stale response)
                 }
                 if (action == ACTION_ERROR) {
                     String message = new String(receiveBuffer, 8, received.getLength() - 8, StandardCharsets.UTF_8);
-                    throw new TrackerException("tracker 拒絕: " + message);
+                    throw new TrackerException("tracker rejected: " + message);
                 }
                 if (action != expectedAction || received.getLength() < minLength) {
                     continue;
@@ -165,7 +165,7 @@ public final class UdpTracker implements Tracker {
                 return response;
             }
         }
-        throw new TrackerException("UDP tracker 無回應（已重試 " + timeoutsMillis.length + " 次）: " + uri);
+        throw new TrackerException("UDP tracker did not respond (retried " + timeoutsMillis.length + " times): " + uri);
     }
 
     private static int eventCode(AnnounceEvent event) {

@@ -19,14 +19,14 @@ import net.derrek.bt4j.peer.PeerId;
 import net.derrek.bt4j.storage.ResumeData;
 
 /**
- * 套件對外入口。一個程序通常只建一個實例：
- * 持有 listen socket（接受連入 peer）、DHT、peer id，管理多個 {@link TorrentSession}。
+ * The package's public entry point. A process typically creates only one instance:
+ * it holds the listen socket (accepting incoming peers), DHT, and peer id, and manages multiple {@link TorrentSession}.
  *
  * <pre>{@code
  * try (var client = BtClient.builder().listenPort(6881).build()) {
  *     var session = client.addMagnet("magnet:?xt=urn:btih:...");
  *     var meta = session.awaitMetadata(Duration.ofMinutes(5));
- *     // UI 顯示 meta.files()，使用者勾選後：
+ *     // UI displays meta.files(); after the user selects files:
  *     session.start(DownloadPlan.files(Path.of("/data"), Set.of(0, 2)));
  * }
  * }</pre>
@@ -38,7 +38,7 @@ public final class BtClient implements AutoCloseable {
     private final PeerId peerId = PeerId.generate();
     private final int listenPort;
     private final int maxPeersPerTorrent;
-    private final DhtClient dht; // null = 停用
+    private final DhtClient dht; // null = disabled
     private final net.derrek.bt4j.util.RateLimiter downloadLimiter;
     private final net.derrek.bt4j.util.RateLimiter uploadLimiter;
     private final Map<InfoHash, TorrentSession> sessions = new ConcurrentHashMap<>();
@@ -48,8 +48,8 @@ public final class BtClient implements AutoCloseable {
 
     private BtClient(Builder builder) {
         this.maxPeersPerTorrent = builder.maxPeersPerTorrent;
-        // 先綁定 TCP listen socket 取得實際 port（builder.listenPort=0 時由系統指派），
-        // 再讓 DHT 與 session 使用同一個實際 port 對外宣告。
+        // First bind the TCP listen socket to obtain the actual port (assigned by the system when builder.listenPort=0),
+        // then have DHT and sessions announce themselves using the same actual port.
         ServerSocket ls = null;
         try {
             ls = new ServerSocket();
@@ -63,10 +63,10 @@ public final class BtClient implements AutoCloseable {
         this.listenSocket = ls;
         this.listenPort = ls != null ? ls.getLocalPort() : builder.listenPort;
 
-        // 下載沒有「封鎖自己」的概念：<=0 一律視為不限速（傳 -1 給 RateLimiter）
+        // Download has no notion of "blocking yourself": <=0 always means unlimited (pass -1 to RateLimiter)
         this.downloadLimiter = new net.derrek.bt4j.util.RateLimiter(
                 builder.downloadRateLimit <= 0 ? -1 : builder.downloadRateLimit);
-        // 上傳：0 = 封鎖（不上傳）、<0 = 不限、>0 = 限速
+        // Upload: 0 = blocked (no uploading), <0 = unlimited, >0 = rate-limited
         this.uploadLimiter = new net.derrek.bt4j.util.RateLimiter(builder.uploadRateLimit);
         if (builder.dhtEnabled) {
             DhtClient client = new DhtClient(listenPort, builder.dhtBootstrapNodes);
@@ -85,7 +85,7 @@ public final class BtClient implements AutoCloseable {
         return new Builder();
     }
 
-    /** 實際綁定的 TCP listen port（builder 傳 0 時為系統指派的 port）。 */
+    /** The actual bound TCP listen port (system-assigned when the builder is passed 0). */
     public int listenPort() {
         return listenPort;
     }
@@ -105,11 +105,11 @@ public final class BtClient implements AutoCloseable {
         }
     }
 
-    /** 讀出連入 peer 的 handshake，依 info-hash 交給對應的 session。 */
+    /** Reads the incoming peer's handshake and dispatches it to the corresponding session by info-hash. */
     private void routeIncoming(Socket socket) {
         try {
             socket.setSoTimeout(10_000);
-            // 精確讀出 68 bytes handshake（不緩衝，後續由 PeerConnection 接手同一 socket）
+            // Read exactly the 68-byte handshake (unbuffered; PeerConnection later takes over the same socket)
             byte[] raw = socket.getInputStream().readNBytes(Handshake.LENGTH);
             if (raw.length != Handshake.LENGTH) {
                 socket.close();
@@ -120,7 +120,7 @@ public final class BtClient implements AutoCloseable {
             if (session instanceof DefaultTorrentSession dts) {
                 dts.acceptIncoming(socket, theirs);
             } else {
-                socket.close(); // 未知 torrent
+                socket.close(); // unknown torrent
             }
         } catch (IOException | RuntimeException e) {
             try {
@@ -131,8 +131,8 @@ public final class BtClient implements AutoCloseable {
     }
 
     /**
-     * 加入磁力連結，立即回傳（背景開始取 metadata，狀態 FETCHING_METADATA）。
-     * peer 來源：磁力連結的 tr=（tracker）、x.pe=（直連位址）與 DHT。
+     * Adds a magnet link and returns immediately (metadata fetching starts in the background, state FETCHING_METADATA).
+     * Peer sources: the magnet link's tr= (trackers), x.pe= (direct addresses), and DHT.
      */
     public TorrentSession addMagnet(String magnetLink) {
         net.derrek.bt4j.metainfo.MagnetUri magnet = net.derrek.bt4j.metainfo.MagnetUri.parse(magnetLink);
@@ -145,7 +145,7 @@ public final class BtClient implements AutoCloseable {
                 peerId, listenPort, maxPeersPerTorrent, dht, downloadLimiter, uploadLimiter);
     }
 
-    /** 加入 .torrent 檔（狀態直接 METADATA_READY）。 */
+    /** Adds a .torrent file (state goes directly to METADATA_READY). */
     public TorrentSession addTorrent(Path torrentFile) {
         return addTorrent(Metainfo.parse(torrentFile));
     }
@@ -156,8 +156,8 @@ public final class BtClient implements AutoCloseable {
     }
 
     /**
-     * 伺服器重啟後由 resume 資料恢復 session（不重新下載已完成 piece，跳過已驗證部分）。
-     * resume 資料自足（內嵌 metadata），無需另外提供 .torrent。
+     * Restores a session from resume data after a server restart (does not re-download completed pieces, skips already-verified parts).
+     * Resume data is self-contained (embeds metadata), so no separate .torrent is needed.
      */
     public TorrentSession restore(ResumeData resumeData) {
         return sessions.computeIfAbsent(resumeData.infoHash(),
@@ -172,7 +172,7 @@ public final class BtClient implements AutoCloseable {
         return Optional.ofNullable(sessions.get(infoHash));
     }
 
-    /** 關閉並移除某個 session（例如磁力連結取得 metadata 後丟棄暫時 session）。 */
+    /** Closes and removes a session (e.g. discarding a temporary session after a magnet link has fetched its metadata). */
     public void remove(InfoHash infoHash) {
         TorrentSession removed = sessions.remove(infoHash);
         if (removed != null) {
@@ -184,7 +184,7 @@ public final class BtClient implements AutoCloseable {
         return peerId;
     }
 
-    /** 關閉所有 session、DHT 與 listen socket。 */
+    /** Closes all sessions, DHT, and the listen socket. */
     @Override
     public void close() {
         closed = true;
@@ -209,52 +209,52 @@ public final class BtClient implements AutoCloseable {
         private int listenPort = 6881;
         private boolean dhtEnabled = true;
         private int maxPeersPerTorrent = 30;
-        private long downloadRateLimit = -1; // 預設不限（<=0 = 不限）
-        private long uploadRateLimit = -1;   // 預設不限（0 = 不上傳、<0 = 不限）
+        private long downloadRateLimit = -1; // default unlimited (<=0 = unlimited)
+        private long uploadRateLimit = -1;   // default unlimited (0 = no uploading, <0 = unlimited)
         private List<InetSocketAddress> dhtBootstrapNodes = DhtClient.DEFAULT_BOOTSTRAP_NODES;
 
         private Builder() {
         }
 
         /**
-         * peer wire 的 TCP listen port，同時作為 DHT UDP port。預設 6881；
-         * 傳 0 表示由系統指派（實際 port 見 {@link BtClient#listenPort()}）。
+         * The TCP listen port for the peer wire, also used as the DHT UDP port. Default 6881;
+         * pass 0 to let the system assign one (see {@link BtClient#listenPort()} for the actual port).
          */
         public Builder listenPort(int port) {
             if (port < 0 || port > 65535) {
-                throw new IllegalArgumentException("port 超出範圍: " + port);
+                throw new IllegalArgumentException("port out of range: " + port);
             }
             this.listenPort = port;
             return this;
         }
 
-        /** 停用 DHT（預設啟用）。private torrent 無論此設定皆不用 DHT。 */
+        /** Disables DHT (enabled by default). Private torrents never use DHT regardless of this setting. */
         public Builder dhtEnabled(boolean enabled) {
             this.dhtEnabled = enabled;
             return this;
         }
 
         /**
-         * 覆寫 DHT bootstrap 節點（預設 {@link DhtClient#DEFAULT_BOOTSTRAP_NODES}）。
-         * 僅冷啟動時使用；有 resume 的路由表時優先用既有節點。
+         * Overrides the DHT bootstrap nodes (default {@link DhtClient#DEFAULT_BOOTSTRAP_NODES}).
+         * Used only on a cold start; existing nodes take priority when a resumed routing table is available.
          */
         public Builder dhtBootstrapNodes(List<InetSocketAddress> nodes) {
             this.dhtBootstrapNodes = List.copyOf(nodes);
             return this;
         }
 
-        /** 每個 torrent 的最大 peer 連線數，預設 30。 */
+        /** Maximum number of peer connections per torrent, default 30. */
         public Builder maxPeersPerTorrent(int max) {
             if (max < 1) {
-                throw new IllegalArgumentException("maxPeersPerTorrent 必須為正: " + max);
+                throw new IllegalArgumentException("maxPeersPerTorrent must be positive: " + max);
             }
             this.maxPeersPerTorrent = max;
             return this;
         }
 
         /**
-         * 全域下載速率上限（bytes/s，所有 torrent 共用）。
-         * {@code <= 0} 不限速；{@code > 0} 限制在該速率。
+         * Global download rate limit (bytes/s, shared across all torrents).
+         * {@code <= 0} unlimited; {@code > 0} caps at that rate.
          */
         public Builder downloadRateLimit(long bytesPerSec) {
             this.downloadRateLimit = bytesPerSec;
@@ -262,9 +262,9 @@ public final class BtClient implements AutoCloseable {
         }
 
         /**
-         * 全域上傳速率上限（bytes/s，所有 torrent 共用）。
-         * {@code == 0} 完全不上傳（下載/做種期間對 peer 保持 choke、拒絕 request）；
-         * {@code < 0} 不限速；{@code > 0} 限制在該速率。
+         * Global upload rate limit (bytes/s, shared across all torrents).
+         * {@code == 0} no uploading at all (keeps peers choked and rejects requests during download/seeding);
+         * {@code < 0} unlimited; {@code > 0} caps at that rate.
          */
         public Builder uploadRateLimit(long bytesPerSec) {
             this.uploadRateLimit = bytesPerSec;

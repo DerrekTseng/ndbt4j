@@ -20,14 +20,14 @@ import net.derrek.bt4j.peer.PeerMessage;
 import net.derrek.bt4j.piece.Bitfield;
 
 /**
- * 測試用最小 seeder：
- * 回應 handshake（亮擴充 bit）、送 extension handshake（ut_metadata + metadata_size）、
- * 全滿 bitfield、Interested→Unchoke、Request→Piece、
- * ut_metadata request→data（BEP 9 服務端）。
+ * Minimal seeder for tests:
+ * responds to the handshake (with the extension bit set), sends the extension handshake (ut_metadata + metadata_size),
+ * a full bitfield, Interested->Unchoke, Request->Piece,
+ * and ut_metadata request->data (the BEP 9 server side).
  */
 public final class TestSeeder implements AutoCloseable {
 
-    private static final int LOCAL_UT_METADATA_ID = 1; // 本端宣告的接收 id
+    private static final int LOCAL_UT_METADATA_ID = 1; // the receive id advertised by this end
 
     private final ServerSocket server;
     private final Metainfo metainfo;
@@ -36,7 +36,7 @@ public final class TestSeeder implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicLong uploaded = new java.util.concurrent.atomic.AtomicLong();
     private volatile boolean closed;
 
-    /** 測試用：此 seeder 已上傳（回應 Request）的位元組總數。 */
+    /** For tests: the total number of bytes this seeder has uploaded (in response to Request). */
     public long uploadedBytesForTest() {
         return uploaded.get();
     }
@@ -73,7 +73,7 @@ public final class TestSeeder implements AutoCloseable {
             out.write(Handshake.outgoing(theirs.infoHash(), PeerId.generate(), false, true, false).encode());
             out.flush();
 
-            // extension handshake：宣告 ut_metadata（id=1）與 metadata_size
+            // extension handshake: advertise ut_metadata (id=1) and metadata_size
             byte[] infoBytes = metainfo.infoDictBytes();
             PeerMessage.write(out, new PeerMessage.Extended(0, Bencode.encode(dict(
                     "m", dict("ut_metadata", new BValue.BInteger(LOCAL_UT_METADATA_ID)),
@@ -106,7 +106,7 @@ public final class TestSeeder implements AutoCloseable {
                 }
             }
         } catch (IOException ignored) {
-            // 對方斷線
+            // peer disconnected
         }
     }
 

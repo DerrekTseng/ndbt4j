@@ -17,8 +17,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * 端到端驗收（M3）：本地假 tracker + 測試 seeder，
- * 完整走過 announce → compact peers → handshake → 下載 → SHA-1 驗證 → 檔案落地。
+ * End-to-end acceptance (M3): local fake tracker + test seeder,
+ * walking the full flow of announce -> compact peers -> handshake -> download -> SHA-1 verification -> file written to disk.
  */
 class EndToEndDownloadTest {
 
@@ -26,14 +26,14 @@ class EndToEndDownloadTest {
 
     @Test
     void downloadSingleFileTorrentEndToEnd(@TempDir Path tmp) throws Exception {
-        byte[] content = TorrentFixtures.randomBytes(100_000, 42); // 7 pieces（最後一個 1696 bytes）
+        byte[] content = TorrentFixtures.randomBytes(100_000, 42); // 7 pieces (last one is 1696 bytes)
         Metainfo bootstrap = TorrentFixtures.singleFile("e2e.bin", content, PIECE_LENGTH, "http://placeholder/");
 
         try (TestSeeder seeder = new TestSeeder(bootstrap, content);
              FakeHttpTracker tracker = new FakeHttpTracker(seeder.port())) {
 
             Metainfo metainfo = TorrentFixtures.singleFile("e2e.bin", content, PIECE_LENGTH, tracker.announceUrl());
-            assertEquals(bootstrap.infoHash(), metainfo.infoHash()); // announce 不影響 info-hash
+            assertEquals(bootstrap.infoHash(), metainfo.infoHash()); // announce does not affect the info-hash
 
             try (BtClient client = BtClient.builder().listenPort(6899).maxPeersPerTorrent(5)
                     .dhtEnabled(false).build()) {
@@ -55,8 +55,8 @@ class EndToEndDownloadTest {
                 });
 
                 session.start(DownloadPlan.allFiles(tmp));
-                assertTrue(completed.await(30, TimeUnit.SECONDS), "30 秒內未完成下載");
-                assertTrue(fileDone.await(5, TimeUnit.SECONDS), "onFileCompleted 未觸發");
+                assertTrue(completed.await(30, TimeUnit.SECONDS), "download did not complete within 30 seconds");
+                assertTrue(fileDone.await(5, TimeUnit.SECONDS), "onFileCompleted was not triggered");
                 assertEquals(SessionState.SEEDING, session.state());
 
                 TorrentStats stats = session.stats();

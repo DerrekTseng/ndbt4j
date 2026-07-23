@@ -9,14 +9,14 @@ import java.util.Optional;
 import net.derrek.bt4j.metainfo.Metainfo;
 
 /**
- * rarest-first 策略（BEP 3 建議）：
- * 統計每個 piece 在已連線 peer 間的持有數，優先請求最稀有者。
- * 同時進行中的 piece 數有上限（限制 FileStorage 的記憶體用量）。
- * 所有方法皆同步（多條 peer 讀迴圈併發呼叫）。
+ * Rarest-first strategy (recommended by BEP 3):
+ * counts how many connected peers hold each piece and requests the rarest ones first.
+ * The number of pieces in progress at once is capped (to bound FileStorage's memory use).
+ * All methods are synchronized (called concurrently by multiple peer read loops).
  */
 public final class RarestFirstPicker implements PiecePicker {
 
-    /** 同時進行中的 piece 上限（每個 piece 在 storage 佔一個 pieceLength 的緩衝）。 */
+    /** Cap on pieces in progress at once (each piece occupies a pieceLength buffer in storage). */
     static final int MAX_ACTIVE_PIECES = 32;
 
     private final Metainfo metainfo;
@@ -25,7 +25,7 @@ public final class RarestFirstPicker implements PiecePicker {
     private final BitSet verified;
     private final Map<Integer, PieceProgress> active = new HashMap<>();
 
-    /** 進行中 piece 的 block 狀態。 */
+    /** Block state of a piece in progress. */
     private static final class PieceProgress {
         final int blockCount;
         final BitSet requested;
@@ -39,7 +39,7 @@ public final class RarestFirstPicker implements PiecePicker {
     }
 
     /**
-     * @param alreadyHave 已完成（驗證過）的 piece，例如 resume 回復的進度
+     * @param alreadyHave pieces already completed (verified), e.g. progress restored on resume
      */
     public RarestFirstPicker(Metainfo metainfo, PieceSelection selection, Bitfield alreadyHave) {
         this.metainfo = metainfo;
@@ -53,7 +53,7 @@ public final class RarestFirstPicker implements PiecePicker {
         }
     }
 
-    // ---- 稀有度統計 ----
+    // ---- rarity statistics ----
 
     public synchronized void onPeerBitfield(Bitfield peerHas) {
         for (int p = 0; p < availability.length; p++) {
@@ -75,13 +75,13 @@ public final class RarestFirstPicker implements PiecePicker {
         }
     }
 
-    // ---- 排程 ----
+    // ---- scheduling ----
 
     @Override
     public synchronized List<BlockRequest> pick(Bitfield peerHas, int maxBlocks) {
         List<BlockRequest> out = new ArrayList<>();
 
-        // 1) 先補完進行中的 piece（減少同時展開的 piece 數）
+        // 1) first fill in pieces already in progress (reduces the number of pieces opened at once)
         for (Map.Entry<Integer, PieceProgress> entry : active.entrySet()) {
             fillFrom(entry.getKey(), entry.getValue(), peerHas, out, maxBlocks);
             if (out.size() >= maxBlocks) {
@@ -89,7 +89,7 @@ public final class RarestFirstPicker implements PiecePicker {
             }
         }
 
-        // 2) 展開新 piece：稀有度最低者優先
+        // 2) open new pieces: the rarest first
         while (out.size() < maxBlocks && active.size() < MAX_ACTIVE_PIECES) {
             int best = -1;
             for (int p = 0; p < availability.length; p++) {
@@ -106,7 +106,7 @@ public final class RarestFirstPicker implements PiecePicker {
             fillFrom(best, progress, peerHas, out, maxBlocks);
         }
 
-        // 3) endgame：所有剩餘 block 都已派發時，重複請求未到貨的 block（跨 peer 加速尾段）
+        // 3) endgame: once all remaining blocks have been dispatched, re-request blocks not yet delivered (across peers to speed up the tail)
         if (out.isEmpty() && isEndgameLocked()) {
             for (Map.Entry<Integer, PieceProgress> entry : active.entrySet()) {
                 int p = entry.getKey();
@@ -125,8 +125,8 @@ public final class RarestFirstPicker implements PiecePicker {
     }
 
     /**
-     * 只針對指定 piece 挑 block（Fast Extension 的 Allowed Fast：即使被 choke 也可請求）。
-     * piece 已完成/非需求時回傳空。
+     * Pick blocks only from the specified piece (Fast Extension's Allowed Fast: may be requested even while choked).
+     * Returns empty when the piece is already complete or not wanted.
      */
     public synchronized List<BlockRequest> pickFromPiece(int pieceIndex, int maxBlocks) {
         List<BlockRequest> out = new ArrayList<>();
@@ -171,7 +171,7 @@ public final class RarestFirstPicker implements PiecePicker {
     public synchronized Optional<Integer> onBlockReceived(BlockRequest block) {
         PieceProgress progress = active.get(block.pieceIndex());
         if (progress == null) {
-            return Optional.empty(); // 已驗證或已重設（endgame 重複到貨）
+            return Optional.empty(); // already verified or reset (duplicate delivery in endgame)
         }
         int blockIndex = block.begin() / BlockRequest.BLOCK_SIZE;
         if (progress.received.get(blockIndex)) {
@@ -190,7 +190,7 @@ public final class RarestFirstPicker implements PiecePicker {
         if (valid) {
             verified.set(pieceIndex);
         }
-        // 驗證失敗：回到未開始狀態，之後重新排入
+        // verification failed: return to the not-started state, to be re-queued later
     }
 
     @Override
@@ -214,18 +214,18 @@ public final class RarestFirstPicker implements PiecePicker {
     private boolean isEndgameLocked() {
         for (int p = 0; p < availability.length; p++) {
             if (selection.isWanted(p) && !verified.get(p) && !active.containsKey(p)) {
-                return false; // 還有未展開的 piece
+                return false; // there are still unopened pieces
             }
         }
         for (PieceProgress progress : active.values()) {
             if (progress.requested.cardinality() < progress.blockCount) {
-                return false; // 還有未派發的 block
+                return false; // there are still undispatched blocks
             }
         }
         return true;
     }
 
-    /** 所有需求 piece 都已驗證完成。 */
+    /** All wanted pieces have been verified and completed. */
     public synchronized boolean isComplete() {
         for (int p = 0; p < availability.length; p++) {
             if (selection.isWanted(p) && !verified.get(p)) {

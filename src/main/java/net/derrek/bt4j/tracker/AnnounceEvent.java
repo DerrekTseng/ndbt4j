@@ -1,13 +1,13 @@
 package net.derrek.bt4j.tracker;
 
-/** tracker announce 的 event 參數（BEP 3）。 */
+/** The event parameter of a tracker announce (BEP 3). */
 public enum AnnounceEvent {
-    /** 開始下載（第一次 announce）。 */
+    /** Download started (first announce). */
     STARTED,
-    /** 停止（關閉上傳、關閉 session 時送出）。 */
+    /** Stopped (sent when uploading or the session is shut down). */
     STOPPED,
-    /** 下載完成。 */
+    /** Download completed. */
     COMPLETED,
-    /** 定期回報（不帶 event 參數）。 */
+    /** Periodic report (no event parameter). */
     NONE
 }

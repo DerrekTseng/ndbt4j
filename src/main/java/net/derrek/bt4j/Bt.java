@@ -26,19 +26,20 @@ import net.derrek.bt4j.session.TorrentSession;
 import net.derrek.bt4j.storage.ResumeData;
 
 /**
- * BitTorrent 引擎對外入口（facade）。一個程序通常建立一個實例。
- * 內部包裝 {@link BtClient}；持有 listen socket、DHT、全域限速。
+ * Public entry point (facade) of the BitTorrent engine. A process usually creates a single instance.
+ * Internally wraps {@link BtClient}; owns the listen socket, DHT, and global rate limits.
  *
- * 持久化模型：每個下載任務在其目標目錄下有一個以 info-hash 命名的
- * {@code <info-hash>.bt4j} 檔（引擎自管）。同一目錄可並存多個不同 torrent 的 .bt4j。
+ * Persistence model: each download task has a {@code <info-hash>.bt4j} file named after its
+ * info-hash in the target directory (engine-managed). Multiple .bt4j for different torrents
+ * can coexist in the same directory.
  * <ul>
- *   <li>{@link #createDownloadJob} 當場建立 {@code <info-hash>.bt4j}（同 torrent 的檔已存在則拋錯）。</li>
- *   <li>{@link #restoreDownloadJobs} 掃描目錄的所有 .bt4j，回傳 job 清單（沒有則回空清單）。</li>
- *   <li>下載完成且不做種 → 刪除 .bt4j；若做種 → 保留（做種中重啟仍可 restore）。</li>
- *   <li>{@link #stop} 硬停、保留檔案與 .bt4j（可再 restore）。</li>
- *   <li>{@link #deleteJob} 只刪除 .bt4j、保留已下載檔案。</li>
+ *   <li>{@link #createDownloadJob} creates {@code <info-hash>.bt4j} on the spot (throws if the file for the same torrent already exists).</li>
+ *   <li>{@link #restoreDownloadJobs} scans all .bt4j in the directory and returns the job list (empty list if none).</li>
+ *   <li>Download complete and not seeding -> delete .bt4j; if seeding -> keep it (can still restore after a restart while seeding).</li>
+ *   <li>{@link #stop} hard-stops, keeping the files and .bt4j (can restore again).</li>
+ *   <li>{@link #deleteJob} deletes only the .bt4j, keeping already-downloaded files.</li>
  * </ul>
- * {@link #download} 以 info-hash 去重：同一 torrent 重複 download 會回傳同一個既有 task。
+ * {@link #download} deduplicates by info-hash: calling download again for the same torrent returns the same existing task.
  *
  * <pre>{@code
  * try (Bt bt = Bt.builder().listenPort(6881).downloadRateLimit(0).build()) {
@@ -47,9 +48,9 @@ import net.derrek.bt4j.storage.ResumeData;
  *             .filter(f -> f.path().endsWith(".mp4")).toList();
  *     TorrentDownloadJob job = bt.createDownloadJob(wanted, Path.of("/data/movie"), true);
  *     TorrentDownloadTask task = bt.download(job);
- *     // 輪詢 task.progress() / task.fileProgress() 更新 UI
+ *     // poll task.progress() / task.fileProgress() to update the UI
  *
- *     // 重啟後恢復整個目錄的所有任務（download 冪等，重複自動略過）：
+ *     // after a restart, restore all tasks in the whole directory (download is idempotent, duplicates auto-skipped):
  *     bt.restoreDownloadJobs(Path.of("/data/movie")).forEach(bt::download);
  * }
  * }</pre>
@@ -74,9 +75,9 @@ public final class Bt implements AutoCloseable {
         return new Builder();
     }
 
-    // ---- 取得 torrent 內容 ----
+    // ---- obtain torrent content ----
 
-    /** 解析 .torrent 檔，立即回傳內容。 */
+    /** Parses a .torrent file and returns the content immediately. */
     public TorrentContent fromTorrent(Path torrentFile) {
         return new TorrentContentImpl(Metainfo.parse(torrentFile));
     }
@@ -86,10 +87,11 @@ public final class Bt implements AutoCloseable {
     }
 
     /**
-     * 從磁力連結取得內容。**阻塞**直到 metadata 到齊或逾時
-     * （magnet 只有 info-hash，檔案清單需向 swarm 索取）。取得後即丟棄暫時 session，不佔資源。
+     * Obtains content from a magnet link. **Blocks** until the metadata is complete or times out
+     * (a magnet only has the info-hash; the file list must be requested from the swarm). Once obtained,
+     * the temporary session is discarded and holds no resources.
      *
-     * @throws TimeoutException 逾時仍無法取得（例如死種）
+     * @throws TimeoutException still could not be obtained before the timeout (e.g. a dead torrent)
      */
     public TorrentContent fromMagnet(String magnetUri, Duration timeout)
             throws TimeoutException, InterruptedException {
@@ -98,20 +100,20 @@ public final class Bt implements AutoCloseable {
             Metainfo metainfo = session.awaitMetadata(timeout);
             return new TorrentContentImpl(metainfo);
         } finally {
-            client.remove(session.infoHash()); // 丟棄取 metadata 的暫時 session
+            client.remove(session.infoHash()); // discard the temporary session used to fetch metadata
         }
     }
 
-    // ---- 建立/還原任務 ----
+    // ---- create/restore tasks ----
 
     /**
-     * 建立新的下載任務並在 targetDir 當場寫入 {@code <info-hash>.bt4j}。
+     * Creates a new download task and writes {@code <info-hash>.bt4j} into targetDir on the spot.
      *
-     * @param filesToDownload    要下載的檔案；**必須全部來自同一個 TorrentContent**，否則拋錯。空清單＝全部檔案
-     * @param targetDir          目標目錄（同目錄可並存其他 torrent 的 .bt4j）
-     * @param seedAfterComplete  完成後是否移入做種列表
-     * @throws IllegalArgumentException filesToDownload 混入不同種子的檔案
-     * @throws IllegalStateException    此 torrent 的 {@code <info-hash>.bt4j} 已存在於 targetDir
+     * @param filesToDownload    files to download; **must all come from the same TorrentContent**, otherwise throws. Empty list = all files
+     * @param targetDir          target directory (.bt4j for other torrents may coexist in the same directory)
+     * @param seedAfterComplete  whether to move into the seeding list after completion
+     * @throws IllegalArgumentException filesToDownload mixes files from different torrents
+     * @throws IllegalStateException    this torrent's {@code <info-hash>.bt4j} already exists in targetDir
      */
     public TorrentDownloadJob createDownloadJob(List<TorrentContentFile> filesToDownload,
                                                 Path targetDir, boolean seedAfterComplete) {
@@ -122,11 +124,11 @@ public final class Bt implements AutoCloseable {
         }
         Path bt4j = bt4jPath(targetDir, content.infoHashHex());
         if (Files.exists(bt4j)) {
-            throw new IllegalStateException("此 torrent 的 .bt4j 已存在: " + bt4j);
+            throw new IllegalStateException("this torrent's .bt4j already exists: " + bt4j);
         }
         TorrentDownloadJobImpl job = new TorrentDownloadJobImpl(
                 content, indices, targetDir, seedAfterComplete, false, null);
-        // 當場寫入初始 .bt4j（完成數 0）
+        // write the initial .bt4j on the spot (completed count 0)
         ResumeData initial = new ResumeData(content.metainfo.toTorrentBytes(),
                 new Bitfield(content.metainfo.pieceCount()), Set.copyOf(indices),
                 targetDir, 0, false, seedAfterComplete);
@@ -141,8 +143,8 @@ public final class Bt implements AutoCloseable {
     }
 
     /**
-     * 掃描 targetDir 內所有 {@code <info-hash>.bt4j}，各還原成一個 job（重啟續傳）。
-     * 目錄沒有任何 .bt4j 時回傳空清單（不拋錯）。壞掉/無法解析的個別 .bt4j 會略過。
+     * Scans all {@code <info-hash>.bt4j} in targetDir and restores each into a job (resume after restart).
+     * Returns an empty list if the directory has no .bt4j (does not throw). Individual broken/unparseable .bt4j are skipped.
      */
     public List<TorrentDownloadJob> restoreDownloadJobs(Path targetDir) {
         List<TorrentDownloadJob> jobs = new ArrayList<>();
@@ -161,7 +163,7 @@ public final class Bt implements AutoCloseable {
                 }
             }
         } catch (IOException e) {
-            throw new UncheckedIOException("掃描目錄失敗: " + targetDir, e);
+            throw new UncheckedIOException("failed to scan directory: " + targetDir, e);
         }
         return jobs;
     }
@@ -170,23 +172,23 @@ public final class Bt implements AutoCloseable {
         return restoreDownloadJobs(targetDir.toPath());
     }
 
-    // ---- 執行與查詢 ----
+    // ---- run and query ----
 
-    /** 開始執行任務，回傳可輪詢進度的把手。同一 torrent 重複呼叫回傳既有 task。 */
+    /** Starts running the task and returns a handle for polling progress. Repeated calls for the same torrent return the existing task. */
     public TorrentDownloadTask download(TorrentDownloadJob job) {
         TorrentDownloadJobImpl impl = (TorrentDownloadJobImpl) job;
         InfoHash infoHash = impl.content.metainfo.infoHash();
         TorrentDownloadTaskImpl existing = tasks.get(infoHash);
         if (existing != null) {
-            return existing; // 冪等：已在執行
+            return existing; // idempotent: already running
         }
         Path bt4j = bt4jPath(impl.targetDir, impl.content.infoHashHex());
         TorrentSession session;
         if (impl.fromRestore) {
-            session = client.restore(impl.resumeData); // 信任 .bt4j 的 bitfield，快速續傳
+            session = client.restore(impl.resumeData); // trust the .bt4j bitfield, fast resume
         } else {
             session = client.addTorrent(impl.content.metainfo);
-            session.start(new DownloadPlan(impl.targetDir, impl.selectedIndices, impl.seedAfter)); // 內含 recheck
+            session.start(new DownloadPlan(impl.targetDir, impl.selectedIndices, impl.seedAfter)); // includes recheck
         }
         TorrentDownloadTaskImpl task = new TorrentDownloadTaskImpl(session, impl.content, bt4j, impl.seedAfter);
         tasks.put(infoHash, task);
@@ -195,7 +197,7 @@ public final class Bt implements AutoCloseable {
         return task;
     }
 
-    /** 目前下載中的任務。 */
+    /** Tasks currently downloading. */
     public List<TorrentDownloadTask> getDownloadTaskList() {
         return tasks.values().stream()
                 .filter(t -> t.sessionState() == SessionState.DOWNLOADING)
@@ -203,7 +205,7 @@ public final class Bt implements AutoCloseable {
                 .toList();
     }
 
-    /** 目前做種中的任務。 */
+    /** Tasks currently seeding. */
     public List<TorrentDownloadTask> getSeedingTaskList() {
         return tasks.values().stream()
                 .filter(t -> t.sessionState() == SessionState.SEEDING)
@@ -211,20 +213,20 @@ public final class Bt implements AutoCloseable {
                 .toList();
     }
 
-    // ---- 生命週期控制 ----
+    // ---- lifecycle control ----
 
-    /** 硬停任務（不暫停）。保留已下載檔案與 .bt4j，之後可 {@link #restoreDownloadJobs} 續傳。 */
+    /** Hard-stops the task (not a pause). Keeps downloaded files and .bt4j; can later {@link #restoreDownloadJobs} to resume. */
     public void stop(TorrentDownloadTask task) {
         TorrentDownloadTaskImpl impl = (TorrentDownloadTaskImpl) task;
         InfoHash infoHash = impl.content.metainfo.infoHash();
-        persist(impl); // 停止前寫入最新進度到 .bt4j
+        persist(impl); // write the latest progress to .bt4j before stopping
         tasks.remove(infoHash);
         lastPersistedBytes.remove(infoHash);
         client.remove(infoHash);
         LOG.log(Level.DEBUG, () -> "stopped " + impl.content.infoHashHex());
     }
 
-    /** 停止並刪除該任務的 .bt4j 檔（保留已下載的資料檔案）。 */
+    /** Stops the task and deletes its .bt4j file (keeps the already-downloaded data files). */
     public void deleteJob(TorrentDownloadTask task) {
         TorrentDownloadTaskImpl impl = (TorrentDownloadTaskImpl) task;
         InfoHash infoHash = impl.content.metainfo.infoHash();
@@ -235,18 +237,18 @@ public final class Bt implements AutoCloseable {
         LOG.log(Level.DEBUG, () -> "deleted job " + impl.content.infoHashHex());
     }
 
-    /** 關閉引擎：停止所有任務、DHT 與 listen socket。已下載檔案與 .bt4j 保留。 */
+    /** Closes the engine: stops all tasks, DHT, and the listen socket. Downloaded files and .bt4j are kept. */
     @Override
     public void close() {
         closed = true;
         for (TorrentDownloadTaskImpl task : tasks.values()) {
-            persist(task); // 關閉前保存進度
+            persist(task); // save progress before closing
         }
         tasks.clear();
         client.close();
     }
 
-    // ---- 完成事件：依 seedAfter 保留或刪除 .bt4j ----
+    // ---- completion event: keep or delete .bt4j depending on seedAfter ----
 
     private final class CompletionListener implements SessionListener {
         private final TorrentDownloadTaskImpl task;
@@ -258,19 +260,19 @@ public final class Bt implements AutoCloseable {
         @Override
         public void onDownloadCompleted(TorrentSession session) {
             if (task.seedAfter) {
-                persist(task); // 做種：更新 .bt4j 為完成狀態，繼續保留
+                persist(task); // seeding: update .bt4j to the completed state and keep it
             } else {
                 InfoHash infoHash = session.infoHash();
                 tasks.remove(infoHash);
                 lastPersistedBytes.remove(infoHash);
-                deleteQuietly(task.bt4jPath); // 完成且不做種：刪除 .bt4j
+                deleteQuietly(task.bt4jPath); // completed and not seeding: delete .bt4j
                 client.remove(infoHash);
                 LOG.log(Level.DEBUG, () -> "completed (no seed), removed .bt4j: " + infoHash.hex());
             }
         }
     }
 
-    // ---- 週期持久化 ----
+    // ---- periodic persistence ----
 
     private void persistLoop() {
         while (!closed) {
@@ -288,34 +290,34 @@ public final class Bt implements AutoCloseable {
         }
     }
 
-    /** 若進度有變化，原子寫入該任務的 .bt4j。 */
+    /** Atomically writes the task's .bt4j if progress has changed. */
     private void persist(TorrentDownloadTaskImpl task) {
         if (!tasks.containsKey(task.content.metainfo.infoHash())) {
-            return; // 已被移除（例如剛完成刪檔），避免重建
+            return; // already removed (e.g. just completed and deleted), avoid recreating
         }
         ResumeData resume;
         try {
             resume = task.session.resumeData();
         } catch (RuntimeException e) {
-            return; // metadata 未就緒等
+            return; // metadata not ready, etc.
         }
         InfoHash infoHash = task.content.metainfo.infoHash();
         long bytes = resume.completedPieces().cardinality();
         Long last = lastPersistedBytes.get(infoHash);
         if (last != null && last == bytes) {
-            return; // 沒變化
+            return; // no change
         }
         writeResume(task.bt4jPath, resume);
         lastPersistedBytes.put(infoHash, bytes);
     }
 
-    // ---- 工具 ----
+    // ---- utilities ----
 
     private static Path bt4jPath(Path targetDir, String infoHashHex) {
         return targetDir.resolve(infoHashHex + BT4J_SUFFIX);
     }
 
-    /** 原子寫入：先寫 .tmp 再 rename，避免寫到一半 crash 造成壞檔。 */
+    /** Atomic write: write .tmp first then rename, to avoid a corrupt file if a crash happens mid-write. */
     private static void writeResume(Path bt4j, ResumeData resume) {
         try {
             Files.createDirectories(bt4j.getParent());
@@ -342,18 +344,18 @@ public final class Bt implements AutoCloseable {
 
     private static TorrentContentImpl requireSameTorrent(List<TorrentContentFile> files) {
         if (files.isEmpty()) {
-            throw new IllegalArgumentException("filesToDownload 不可為空（全選請傳整個 getFileList()）");
+            throw new IllegalArgumentException("filesToDownload must not be empty (to select all, pass the entire getFileList())");
         }
         TorrentContent content = files.getFirst().content();
         for (TorrentContentFile file : files) {
             if (file.content() != content) {
-                throw new IllegalArgumentException("filesToDownload 含不同 torrent 的檔案，不允許混合");
+                throw new IllegalArgumentException("filesToDownload contains files from different torrents; mixing is not allowed");
             }
         }
         return (TorrentContentImpl) content;
     }
 
-    /** 引擎設定。 */
+    /** Engine settings. */
     public static final class Builder {
 
         private final BtClient.Builder clientBuilder = BtClient.builder();
@@ -361,35 +363,35 @@ public final class Bt implements AutoCloseable {
         private Builder() {
         }
 
-        /** TCP listen port（同時作為 DHT UDP port）。0＝系統指派。預設 6881。 */
+        /** TCP listen port (also used as the DHT UDP port). 0 = system-assigned. Default 6881. */
         public Builder listenPort(int port) {
             clientBuilder.listenPort(port);
             return this;
         }
 
-        /** 停用 DHT（預設啟用）。 */
+        /** Disables DHT (enabled by default). */
         public Builder dhtEnabled(boolean enabled) {
             clientBuilder.dhtEnabled(enabled);
             return this;
         }
 
-        /** 全域下載速率上限（bytes/s）。{@code <= 0} 不限；{@code > 0} 限速。 */
+        /** Global download rate limit (bytes/s). {@code <= 0} unlimited; {@code > 0} rate-limited. */
         public Builder downloadRateLimit(long bytesPerSec) {
             clientBuilder.downloadRateLimit(bytesPerSec);
             return this;
         }
 
         /**
-         * 全域上傳速率上限（bytes/s）。
-         * {@code == 0} 完全不上傳（下載/做種期間對 peer 保持 choke、拒絕 request）；
-         * {@code < 0} 不限；{@code > 0} 限速。
+         * Global upload rate limit (bytes/s).
+         * {@code == 0} no uploading at all (keeps peers choked and rejects requests during download/seeding);
+         * {@code < 0} unlimited; {@code > 0} rate-limited.
          */
         public Builder uploadRateLimit(long bytesPerSec) {
             clientBuilder.uploadRateLimit(bytesPerSec);
             return this;
         }
 
-        /** 每個 torrent 的最大 peer 連線數，預設 30。 */
+        /** Maximum peer connections per torrent, default 30. */
         public Builder maxPeersPerTorrent(int max) {
             clientBuilder.maxPeersPerTorrent(max);
             return this;

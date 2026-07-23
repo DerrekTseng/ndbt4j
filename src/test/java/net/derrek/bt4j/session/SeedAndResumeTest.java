@@ -20,8 +20,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * M8 驗收：真正的做種（連入 listener + 上傳路徑）與重啟續傳。
- * 一個 bt4j client 做種、另一個 bt4j client 下載，全程走真實 wire protocol。
+ * M8 acceptance: real seeding (inbound listener + upload path) and resume after restart.
+ * One bt4j client seeds, another bt4j client downloads, using the real wire protocol throughout.
  */
 class SeedAndResumeTest {
 
@@ -31,7 +31,7 @@ class SeedAndResumeTest {
         return BtClient.builder().listenPort(port).dhtEnabled(false).maxPeersPerTorrent(5).build();
     }
 
-    /** 建立做種 client：完整檔案已在磁碟，以 resume（全完成）還原為 SEEDING。 */
+    /** Create a seeding client: the complete file is already on disk, restored to SEEDING via resume (fully complete). */
     private static BtClient startSeeder(Metainfo meta, byte[] content, Path seederDir) throws Exception {
         Files.createDirectories(seederDir);
         Files.write(seederDir.resolve(meta.name()), content);
@@ -68,12 +68,12 @@ class SeedAndResumeTest {
                     }
                 });
                 session.start(DownloadPlan.allFiles(leecherDir));
-                assertTrue(done.await(30, TimeUnit.SECONDS), "30 秒內未從 bt4j seeder 下載完成");
+                assertTrue(done.await(30, TimeUnit.SECONDS), "did not finish downloading from the bt4j seeder within 30 seconds");
                 assertArrayEquals(content, Files.readAllBytes(leecherDir.resolve("share.bin")));
 
-                // 做種端有實際上傳量
+                // The seeder has actual upload volume
                 assertTrue(seeder.sessions().getFirst().stats().uploadedBytes() >= 100_000,
-                        "做種端應累計上傳 ≥ 檔案大小");
+                        "seeder should accumulate uploads >= file size");
             }
         }
     }
@@ -89,7 +89,7 @@ class SeedAndResumeTest {
 
             Metainfo meta = TorrentFixtures.singleFile("resume.bin", content, PIECE_LENGTH, tracker.announceUrl());
 
-            // 模擬「上次下載到一半」：前 3 個 piece 已完成並落地
+            // Simulate "last download stopped halfway": the first 3 pieces are complete and written to disk
             Path leecherDir = tmp.resolve("leecher");
             Files.createDirectories(leecherDir);
             int completedPieces = 3;
@@ -103,7 +103,7 @@ class SeedAndResumeTest {
 
             try (BtClient leecher = client(0)) {
                 TorrentSession session = leecher.restore(resume);
-                assertEquals(SessionState.DOWNLOADING, session.state()); // 尚未完成 → 續傳
+                assertEquals(SessionState.DOWNLOADING, session.state()); // not yet complete -> resume
 
                 CountDownLatch done = new CountDownLatch(1);
                 session.addListener(new SessionListener() {
@@ -112,17 +112,17 @@ class SeedAndResumeTest {
                         done.countDown();
                     }
                 });
-                assertTrue(done.await(30, TimeUnit.SECONDS), "30 秒內未完成續傳");
+                assertTrue(done.await(30, TimeUnit.SECONDS), "resume did not complete within 30 seconds");
                 assertArrayEquals(content, Files.readAllBytes(leecherDir.resolve("resume.bin")));
 
-                // 續傳只向 seeder 索取缺少的 4 個 piece（50848 bytes），不重下已完成的 3 個；
-                // 故做種端上傳量遠少於整個檔案（若 resume 失效會上傳滿 100000）。
+                // Resume only requests the 4 missing pieces (50848 bytes) from the seeder, not re-downloading the 3 already done;
+                // so the seeder's upload volume is far less than the whole file (if resume failed it would upload the full 100000).
                 long seederUploaded = seeder.sessions().getFirst().stats().uploadedBytes();
                 long missingBytes = content.length - completedBytes;
                 assertTrue(seederUploaded < content.length - PIECE_LENGTH,
-                        "做種端上傳 " + seederUploaded + " 應遠少於整檔（證明已完成 piece 未重下）");
+                        "seeder uploaded " + seederUploaded + " should be far less than the whole file (proving completed pieces were not re-downloaded)");
                 assertTrue(seederUploaded >= missingBytes,
-                        "做種端至少要上傳缺少的 " + missingBytes + " bytes，實際 " + seederUploaded);
+                        "seeder must upload at least the missing " + missingBytes + " bytes, actual " + seederUploaded);
             }
         }
     }
@@ -156,7 +156,7 @@ class SeedAndResumeTest {
         allComplete.setAll();
         ResumeData resume = new ResumeData(seederMeta.toTorrentBytes(), allComplete, Set.of(), seederDir, 0, false, true);
 
-        // 做種端 uploadRateLimit(0) = 完全不上傳
+        // Seeder uploadRateLimit(0) = no uploading at all
         try (BtClient seeder = BtClient.builder().listenPort(0).dhtEnabled(false)
                 .maxPeersPerTorrent(5).uploadRateLimit(0).build()) {
             seeder.restore(resume);
@@ -174,9 +174,9 @@ class SeedAndResumeTest {
                     });
                     session.start(DownloadPlan.allFiles(leecherDir));
 
-                    // 做種端不上傳 → leecher 拿不到任何資料、無法完成
-                    assertFalse(done.await(6, TimeUnit.SECONDS), "上傳封鎖時 leecher 不應完成下載");
-                    assertEquals(0, session.stats().downloadedBytes(), "做種端應完全不上傳");
+                    // Seeder does not upload -> leecher gets no data and cannot complete
+                    assertFalse(done.await(6, TimeUnit.SECONDS), "leecher should not complete the download when uploading is blocked");
+                    assertEquals(0, session.stats().downloadedBytes(), "seeder should upload nothing at all");
                 }
             }
         }

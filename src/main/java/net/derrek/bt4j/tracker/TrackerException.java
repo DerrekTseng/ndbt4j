@@ -1,6 +1,6 @@
 package net.derrek.bt4j.tracker;
 
-/** tracker 通訊失敗：連線錯誤、逾時、或 tracker 回傳 failure reason。 */
+/** Tracker communication failure: connection error, timeout, or a failure reason returned by the tracker. */
 public class TrackerException extends Exception {
 
     public TrackerException(String message) {

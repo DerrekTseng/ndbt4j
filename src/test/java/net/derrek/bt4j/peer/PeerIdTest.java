@@ -28,7 +28,7 @@ class PeerIdTest {
         PeerId id = PeerId.generate();
         for (int i = PeerId.CLIENT_PREFIX.length(); i < 20; i++) {
             byte b = id.bytes()[i];
-            assertTrue(b >= 0x20 && b < 0x7F, "位置 " + i + " 不是可列印字元: " + b);
+            assertTrue(b >= 0x20 && b < 0x7F, "position " + i + " is not a printable character: " + b);
         }
     }
 

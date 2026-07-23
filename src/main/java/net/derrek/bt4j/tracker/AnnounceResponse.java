@@ -6,12 +6,12 @@ import java.util.OptionalInt;
 import net.derrek.bt4j.peer.PeerAddress;
 
 /**
- * tracker announce 回應（BEP 3 / compact 格式 BEP 23）。
+ * A tracker announce response (BEP 3 / compact format BEP 23).
  *
- * @param interval 下次 announce 前應等待的時間
- * @param seeders  完成者數（complete，tracker 可能不提供）
- * @param leechers 未完成者數（incomplete，tracker 可能不提供）
- * @param peers    peer 清單
+ * @param interval the time to wait before the next announce
+ * @param seeders  number of seeders (complete; the tracker may not provide it)
+ * @param leechers number of leechers (incomplete; the tracker may not provide it)
+ * @param peers    the peer list
  */
 public record AnnounceResponse(Duration interval,
                                OptionalInt seeders,

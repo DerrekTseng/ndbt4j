@@ -14,7 +14,7 @@ import net.derrek.bt4j.metainfo.Metainfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** facade（Bt）端到端：fromTorrent → createDownloadJob → download → 完成 → .bt4j 生命週期 → restore。 */
+/** facade (Bt) end-to-end: fromTorrent -> createDownloadJob -> download -> complete -> .bt4j lifecycle -> restore. */
 class FacadeTest {
 
     private static final int PIECE_LENGTH = 16384;
@@ -27,13 +27,13 @@ class FacadeTest {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (!cond.getAsBoolean()) {
             if (System.currentTimeMillis() > deadline) {
-                throw new AssertionError("等候條件逾時");
+                throw new AssertionError("timed out waiting for condition");
             }
             Thread.sleep(30);
         }
     }
 
-    /** 建立 seeder + 假 tracker，回傳指向 tracker 的 metainfo。 */
+    /** Create a seeder + fake tracker, returning metainfo that points at the tracker. */
     private record Swarm(TestSeeder seeder, FakeHttpTracker tracker, Metainfo metainfo) implements AutoCloseable {
         @Override
         public void close() throws Exception {
@@ -66,16 +66,16 @@ class FacadeTest {
                 Path targetDir = tmp.resolve("dl");
                 TorrentDownloadJob job = bt.createDownloadJob(tc.getFileList(), targetDir, false);
                 Path bt4j = targetDir.resolve(tc.infoHashHex() + ".bt4j");
-                assertTrue(Files.exists(bt4j), "createDownloadJob 應當場建立 .bt4j");
+                assertTrue(Files.exists(bt4j), "createDownloadJob should create the .bt4j on the spot");
 
                 TorrentDownloadTask task = bt.download(job);
                 awaitUntil(() -> task.state() != TaskState.DOWNLOADING, 30_000);
 
-                assertEquals(TaskState.STOPPED, task.state()); // 無做種 → 完成即停止
+                assertEquals(TaskState.STOPPED, task.state()); // no seeding -> stop on completion
                 assertEquals(1.0, task.progress(), 1e-9);
                 assertArrayEquals(content, Files.readAllBytes(targetDir.resolve("movie.bin")));
 
-                awaitUntil(() -> !Files.exists(bt4j), 5_000); // 完成且不做種 → .bt4j 刪除
+                awaitUntil(() -> !Files.exists(bt4j), 5_000); // complete and not seeding -> .bt4j deleted
                 assertTrue(bt.getDownloadTaskList().isEmpty());
                 assertTrue(bt.getSeedingTaskList().isEmpty());
             }
@@ -97,11 +97,11 @@ class FacadeTest {
 
                 awaitUntil(() -> task.state() == TaskState.SEEDING, 30_000);
                 Path bt4j = targetDir.resolve(tc.infoHashHex() + ".bt4j");
-                assertTrue(Files.exists(bt4j), "做種中應保留 .bt4j");
+                assertTrue(Files.exists(bt4j), "should keep the .bt4j while seeding");
                 assertEquals(1, bt.getSeedingTaskList().size());
                 assertTrue(bt.getDownloadTaskList().isEmpty());
 
-                bt.stop(task); // 硬停：保留 .bt4j
+                bt.stop(task); // hard stop: keep the .bt4j
                 assertTrue(Files.exists(bt4j));
                 assertTrue(bt.getSeedingTaskList().isEmpty());
             }
@@ -123,14 +123,14 @@ class FacadeTest {
                 TorrentContent tc2 = bt.fromTorrent(t2);
                 Path dir = tmp.resolve("dl");
 
-                // 混入不同 torrent 的檔案 → 拋錯
+                // Mixing files from different torrents -> throws
                 List<TorrentContentFile> mixed = List.of(tc1.getFileList().get(0), tc2.getFileList().get(0));
                 assertThrows(IllegalArgumentException.class, () -> bt.createDownloadJob(mixed, dir, false));
 
                 bt.createDownloadJob(tc1.getFileList(), dir, false);
-                // 同 torrent 的 .bt4j 已存在 → 拋錯
+                // The .bt4j for the same torrent already exists -> throws
                 assertThrows(IllegalStateException.class, () -> bt.createDownloadJob(tc1.getFileList(), dir, false));
-                // 但不同 torrent 可共存於同目錄
+                // But different torrents can coexist in the same directory
                 bt.createDownloadJob(tc2.getFileList(), dir, false);
                 assertTrue(Files.exists(dir.resolve(tc1.infoHashHex() + ".bt4j")));
                 assertTrue(Files.exists(dir.resolve(tc2.infoHashHex() + ".bt4j")));
@@ -149,19 +149,19 @@ class FacadeTest {
                 TorrentContent tc = bt.fromTorrent(torrentFile);
                 Path targetDir = tmp.resolve("dl");
                 Files.createDirectories(targetDir);
-                // 模擬「上次下載了前 3 個 piece」：預先在目標目錄放半成品檔
+                // Simulate "last download got the first 3 pieces": pre-place a partial file in the target directory
                 int partialBytes = 3 * PIECE_LENGTH;
                 Files.write(targetDir.resolve("partial.bin"), java.util.Arrays.copyOf(content, partialBytes));
 
                 TorrentDownloadJob job = bt.createDownloadJob(tc.getFileList(), targetDir, false);
-                TorrentDownloadTask task = bt.download(job); // start() 會 recheck 救回既有 3 個 piece
+                TorrentDownloadTask task = bt.download(job); // start() rechecks and salvages the existing 3 pieces
                 awaitUntil(() -> task.state() != TaskState.DOWNLOADING, 30_000);
                 assertArrayEquals(content, Files.readAllBytes(targetDir.resolve("partial.bin")));
 
-                // seeder 只需上傳缺少的部分（recheck 救回的 3 個 piece 不重下）
+                // The seeder only needs to upload the missing part (the 3 pieces salvaged by recheck are not re-downloaded)
                 long seederUploaded = sw.seeder().uploadedBytesForTest();
                 assertTrue(seederUploaded < content.length - PIECE_LENGTH,
-                        "recheck 應救回既有半成品，做種端上傳 " + seederUploaded + " 應遠少於整檔");
+                        "recheck should salvage the existing partial file; seeder uploaded " + seederUploaded + " should be far less than the whole file");
             }
         }
     }
@@ -183,13 +183,13 @@ class FacadeTest {
                 bt.createDownloadJob(tc2.getFileList(), dir, false);
             }
 
-            // 新引擎重啟後掃描目錄
+            // A new engine scans the directory after restart
             try (Bt bt = engine()) {
                 List<TorrentDownloadJob> jobs = bt.restoreDownloadJobs(dir);
                 assertEquals(2, jobs.size());
                 assertTrue(jobs.stream().map(j -> j.content().infoHashHex()).toList().containsAll(List.of(hash1, hash2)));
 
-                // 空目錄 → 空清單（不拋錯）
+                // Empty directory -> empty list (no throw)
                 assertTrue(bt.restoreDownloadJobs(tmp.resolve("empty")).isEmpty());
             }
         }

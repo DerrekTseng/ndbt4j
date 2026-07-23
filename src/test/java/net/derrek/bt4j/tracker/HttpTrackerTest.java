@@ -10,7 +10,7 @@ import net.derrek.bt4j.metainfo.InfoHash;
 import net.derrek.bt4j.peer.PeerId;
 import org.junit.jupiter.api.Test;
 
-/** HttpTracker 的離線測試：查詢字串編碼與回應解析（不打網路）。 */
+/** Offline tests for HttpTracker: query string encoding and response parsing (no network). */
 class HttpTrackerTest {
 
     private static byte[] raw(String s) {
@@ -32,7 +32,7 @@ class HttpTrackerTest {
         String query = HttpTracker.buildQuery(request);
 
         assertTrue(query.startsWith("info_hash=Ay%99%CD%F5A%1Ae%22%AB%EB4%C2%05%944%A6%9D%18T"),
-                "info_hash 逐位元組編碼錯誤: " + query);
+                "info_hash byte-by-byte encoding is wrong: " + query);
         assertTrue(query.contains("&port=6881"));
         assertTrue(query.contains("&uploaded=100"));
         assertTrue(query.contains("&downloaded=200"));
@@ -52,7 +52,7 @@ class HttpTrackerTest {
 
     @Test
     void parseCompactResponse() throws TrackerException {
-        // interval=1800、complete=5、incomplete=3、peers=192.168.1.10:51413
+        // interval=1800, complete=5, incomplete=3, peers=192.168.1.10:51413
         byte[] body = raw("d8:completei5e10:incompletei3e8:intervali1800e5:peers6:" +
                 new String(new byte[] {(byte) 192, (byte) 168, 1, 10, (byte) 0xC8, (byte) 0xD5},
                         StandardCharsets.ISO_8859_1) + "e");
