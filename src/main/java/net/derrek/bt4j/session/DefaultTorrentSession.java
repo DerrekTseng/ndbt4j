@@ -59,8 +59,15 @@ final class DefaultTorrentSession implements TorrentSession {
     /** Adaptive pipeline depth: floor (also the depth before we have a rate sample) and ceiling. */
     private static final int MIN_PIPELINE = 16;
     private static final int MAX_PIPELINE = 256;
-    /** Target seconds of data kept in flight per peer; the pipeline depth scales to the peer's recent rate. */
-    private static final int PIPELINE_TARGET_SECONDS = 3;
+    /**
+     * Pipeline depth targets the bandwidth-delay product: keep {@value #RTT_HEADROOM} round-trips of data in
+     * flight so the pipe never drains while waiting for the next block. Depth = rate x (RTT x headroom) / block.
+     */
+    private static final double RTT_HEADROOM = 2.5;
+    /** RTT estimate used before a peer has produced a measurement. */
+    private static final long DEFAULT_RTT_NANOS = 200_000_000L; // 200ms
+    /** Cap on the in-flight window (seconds), so a pathological RTT cannot explode the pipeline. */
+    private static final double MAX_PIPELINE_WINDOW_SECONDS = 4.0;
     /** Maximum length of a single uploaded block (guards against malicious Requests for oversized blocks). */
     private static final int MAX_UPLOAD_BLOCK = 128 * 1024;
     /** Number of upload slots: peers unchoked at once (including 1 optimistic slot). */
@@ -822,12 +829,16 @@ final class DefaultTorrentSession implements TorrentSession {
         volatile long lastRoundBytes;                       // the baseline from the previous choke round
         volatile long recentRate;                           // this round's delta (for ranking / pipeline depth)
         volatile long lastBlockNanos = System.nanoTime();   // last time a block arrived (anti-snubbing)
+        // RTT estimate for bandwidth-delay-product pipeline sizing: sample the latency of a block requested
+        // when the pipeline was empty, tracked as a decaying minimum (the noise floor ~= true RTT).
+        volatile long rttNanos = DEFAULT_RTT_NANOS;
+        private volatile long rttSampleSentNanos;
+        private volatile boolean awaitingRttSample;
 
         /** Adaptive pipeline depth for this peer, scaled to its recent download rate (bounded). */
         private int desiredPipeline() {
             long ratePerSec = recentRate / Math.max(1, chokeIntervalMillis / 1000);
-            long blocks = ratePerSec * PIPELINE_TARGET_SECONDS / BlockRequest.BLOCK_SIZE;
-            return (int) Math.max(MIN_PIPELINE, Math.min(MAX_PIPELINE, blocks));
+            return pipelineDepth(ratePerSec, rttNanos);
         }
 
         PeerWorker(PeerAddress address) {
@@ -932,6 +943,11 @@ final class DefaultTorrentSession implements TorrentSession {
             if (connection.peerChoking() || state != SessionState.DOWNLOADING) {
                 return;
             }
+            // Requesting from an empty pipeline: the next block's latency is a clean RTT sample (no queueing).
+            if (outstanding.isEmpty()) {
+                rttSampleSentNanos = System.nanoTime();
+                awaitingRttSample = true;
+            }
             int want = desiredPipeline() - outstanding.size();
             if (want <= 0) {
                 return;
@@ -978,7 +994,18 @@ final class DefaultTorrentSession implements TorrentSession {
             downloadLimiter.acquire(data.length); // download throttling: stalls the read loop → TCP backpressure
             downloadedBytes.addAndGet(data.length);
             bytesFromPeer.addAndGet(data.length); // choke algorithm: tit-for-tat ranking key
-            lastBlockNanos = System.nanoTime();   // anti-snubbing: this peer is delivering
+            long now = System.nanoTime();
+            lastBlockNanos = now;                 // anti-snubbing: this peer is delivering
+            // RTT sample: the block requested from an empty pipeline just arrived. Track a decaying minimum
+            // (new minima adopted immediately; the estimate drifts up slowly if the true RTT rises) to avoid
+            // the positive-feedback loop that using average latency would create with a deep pipeline.
+            if (awaitingRttSample) {
+                awaitingRttSample = false;
+                long sample = now - rttSampleSentNanos;
+                if (sample > 0) {
+                    rttNanos = sample < rttNanos ? sample : rttNanos + (sample - rttNanos) / 32;
+                }
+            }
             // Record which peers contributed to this piece, for accountability on verification failure
             pieceContributors.computeIfAbsent(pieceIndex, k -> ConcurrentHashMap.newKeySet())
                     .add(connection.address());
@@ -1065,6 +1092,17 @@ final class DefaultTorrentSession implements TorrentSession {
     void setChokeTimingForTest(long chokeIntervalMillis, long snubTimeoutNanos) {
         this.chokeIntervalMillis = chokeIntervalMillis;
         this.snubTimeoutNanos = snubTimeoutNanos;
+    }
+
+    /**
+     * Pipeline depth for a peer from its download rate and RTT (bandwidth-delay product).
+     * In-flight window = min(cap, RTT x headroom); blocks = rate x window / blockSize, clamped to [MIN, MAX].
+     * Package-private static so it is unit-testable.
+     */
+    static int pipelineDepth(long ratePerSec, long rttNanos) {
+        double windowSeconds = Math.min(MAX_PIPELINE_WINDOW_SECONDS, rttNanos / 1e9 * RTT_HEADROOM);
+        long blocks = (long) (ratePerSec * windowSeconds / BlockRequest.BLOCK_SIZE);
+        return (int) Math.max(MIN_PIPELINE, Math.min(MAX_PIPELINE, blocks));
     }
 
     /** Records a verification failure against a peer; bans and disconnects it once the threshold is reached. */
