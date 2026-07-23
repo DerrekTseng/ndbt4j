@@ -28,12 +28,13 @@
 - [x] 測試：22 個（含非 canonical info dict 的 raw-bytes hash 驗證、使用者提供的 magnet 案例）
 - [ ] （延後至 M2/M3 整合測試）對真實 .torrent 檔驗證 info-hash
 
-## M2 — HTTP tracker
+## M2 — HTTP tracker ✅
 
-- [ ] `PeerId.generate`（"-ND1000-" + 隨機）
-- [ ] `PeerAddress.fromCompact`
-- [ ] `HttpTracker.announce`（HttpClient、URL encoding 的 info_hash 陷阱、compact=1）
-- [ ] 整合測試：對公開 tracker 取得 peer 清單
+- [x] `PeerId.generate`（"-ND1000-" + 12 隨機可列印字元）
+- [x] `PeerAddress.fromCompact` / `fromCompact6`（BEP 23 / BEP 7 peers6，port 0 跳過）
+- [x] `HttpTracker.announce`（HttpClient、info_hash 原始位元組逐一 percent-encode、compact=1、dict 形式 peers 也支援、failure reason → TrackerException）
+- [x] `Tracker.of`（scheme 分派；udp 留給 M5）
+- [x] 整合測試：對公開 tracker（opentrackr.org）announce 成功（`mvn test -Dbt4j.integration=true` 執行，預設跳過）
 
 ## M3 — peer wire：端到端下載單檔 torrent
 

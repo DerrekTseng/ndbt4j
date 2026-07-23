@@ -19,6 +19,11 @@ public interface Tracker {
 
     /** 依 URI scheme 建立對應實作。 */
     static Tracker of(URI uri) {
-        throw new UnsupportedOperationException("尚未實作");
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(java.util.Locale.ROOT);
+        return switch (scheme) {
+            case "http", "https" -> new HttpTracker(uri);
+            case "udp" -> new UdpTracker(uri); // M5 實作
+            default -> throw new IllegalArgumentException("不支援的 tracker scheme: " + uri);
+        };
     }
 }
