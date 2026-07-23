@@ -92,7 +92,7 @@ class TrackerManagerTest {
         TrackerManager manager = new TrackerManager(
                 List.of(List.of(bad, good)),
                 TrackerManagerTest::request,
-                peers -> delivered.countDown());
+                _ -> delivered.countDown());
         manager.start();
         try {
             assertTrue(delivered.await(5, TimeUnit.SECONDS));
@@ -106,7 +106,7 @@ class TrackerManagerTest {
     void completedAndStoppedEventsAreSent() throws Exception {
         StubTracker tracker = new StubTracker("t1", false);
         TrackerManager manager = new TrackerManager(
-                List.of(List.of(tracker)), TrackerManagerTest::request, peers -> {
+                List.of(List.of(tracker)), TrackerManagerTest::request, _ -> {
                 });
         manager.start();
         assertTrue(tracker.announced.await(5, TimeUnit.SECONDS));
@@ -125,7 +125,7 @@ class TrackerManagerTest {
     void closeWithoutSuccessfulStartSkipsStoppedAnnounce() throws Exception {
         StubTracker failing = new StubTracker("bad", true);
         TrackerManager manager = new TrackerManager(
-                List.of(List.of(failing)), TrackerManagerTest::request, peers -> {
+                List.of(List.of(failing)), TrackerManagerTest::request, _ -> {
                 });
         manager.start();
         assertTrue(failing.announced.await(5, TimeUnit.SECONDS));
