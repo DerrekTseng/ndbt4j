@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="generator" content="Docutils 0.14: http://docutils.sourceforge.net/" />
+<title>bep_0009.rst_post</title>
+<meta name="author" content="Greg Hazel &lt;greg&#64;bittorrent.com&gt;, Arvid Norberg &lt;arvid&#64;bittorrent.com&gt;" />
+<link rel="stylesheet" href="../css/bep.css" type="text/css" />
+</head>
+<body>
+<div class="document">
+
+<div id="upper" class="clear">
+<div id="wrap">
+<div id="header">
+<h1><a href="../index.html">BitTorrent<span>.org</span></a></h1>
+</div>
+<div id="nav">
+<ul>
+<li><a href="../index.html">Home</a></li>
+<li><a href="../introduction.html">For Users</a></li>
+<li><a href="bep_0000.html"><span>For Developers</span></a></li>
+<li><a href="../mailing_list.html">Developer mailing list</a> </li>
+<li><a href="http://forum.bittorrent.org"> Forums (archive) </a></li>
+</ul>
+</div> <!-- nav -->
+<!-- ### Begin Content ### -->
+<div id="second">
+
+
+<table class="docinfo" frame="void" rules="none">
+<col class="docinfo-name" />
+<col class="docinfo-content" />
+<tbody valign="top">
+<tr class="bep field"><th class="docinfo-name">BEP:</th><td class="field-body">9</td>
+</tr>
+<tr class="title field"><th class="docinfo-name">Title:</th><td class="field-body">Extension for Peers to Send Metadata Files</td>
+</tr>
+<tr><th class="docinfo-name">Version:</th>
+<td>cfd7cd53addbea7e87363ae1a52e2e4b397df3a9</td></tr>
+<tr class="last-modified field"><th class="docinfo-name">Last-Modified:</th><td class="field-body">Sun Mar 26 01:05:53 2017 +0100</td>
+</tr>
+<tr><th class="docinfo-name">Author:</th>
+<td>Greg Hazel &lt;<a class="reference external" href="mailto:greg&#37;&#52;&#48;bittorrent&#46;com">greg<span>&#64;</span>bittorrent<span>&#46;</span>com</a>&gt;, Arvid Norberg &lt;<a class="reference external" href="mailto:arvid&#37;&#52;&#48;bittorrent&#46;com">arvid<span>&#64;</span>bittorrent<span>&#46;</span>com</a>&gt;</td></tr>
+<tr><th class="docinfo-name">Status:</th>
+<td>Accepted</td></tr>
+<tr class="type field"><th class="docinfo-name">Type:</th><td class="field-body">Standards Track</td>
+</tr>
+<tr class="created field"><th class="docinfo-name">Created:</th><td class="field-body">31-Jan-2008</td>
+</tr>
+<tr class="post-history field"><th class="docinfo-name">Post-History:</th><td class="field-body">14-Oct-2012: point out that unrecognized message types should be ignored
+16-May-2016: added peer source parameter to magnets</td>
+</tr>
+</tbody>
+</table>
+<p>The purpose of this extension is to allow clients to join a swarm and
+complete a download without the need of downloading a .torrent file
+first. This extension instead allows clients to download the metadata
+from peers. It makes it possible to support <em>magnet links</em>, a link
+on a web page only containing enough information to join the swarm
+(the info hash).</p>
+<div class="section" id="metadata">
+<h1>metadata</h1>
+<p>This extension only transfers the info-dictionary part of the .torrent
+file. This part can be validated by the info-hash. In this document, that
+part of the .torrent file is referred to as <em>the metadata</em>.</p>
+<p>The metadata is handled in blocks of 16KiB (16384 Bytes). The metadata blocks
+are indexed starting at 0. All blocks are 16KiB except the last block which may
+be smaller.</p>
+</div>
+<div class="section" id="extension-header">
+<h1>extension header</h1>
+<p>The metadata extension uses the extension protocol (specified in <a class="reference external" href="http://www.bittorrent.org/beps/bep_0010.html">BEP 0010</a>
+) to advertize its existence. It adds the &quot;ut_metadata&quot; entry to the &quot;m&quot;
+dictionary in the extension header hand-shake message. This identifies the
+message code used for this message. It also adds &quot;metadata_size&quot; to the
+handshake message (not the &quot;m&quot; dictionary) specifying an integer value of the
+number of bytes of the metadata.</p>
+<p>Example extension handshake message:</p>
+<pre class="literal-block">
+{'m': {'ut_metadata', 3}, 'metadata_size': 31235}
+</pre>
+</div>
+<div class="section" id="extension-message">
+<h1>extension message</h1>
+<p>The extension messages are bencoded. There are 3 different kinds of messages:</p>
+<ol class="arabic simple" start="0">
+<li>request</li>
+<li>data</li>
+<li>reject</li>
+</ol>
+<p>The bencoded messages have a key &quot;msg_type&quot; which value is an integer
+corresponding to the type of message. They also have a key &quot;piece&quot;, which
+indicates which part of the metadata this message refers to.</p>
+<p>In order to support future extensability, an unrecognized message ID MUST
+be ignored.</p>
+<div class="section" id="request">
+<h2>request</h2>
+<p>The <tt class="docutils literal">request</tt> message does not have any additional keys in the dictionary.
+The response to this message, from a peer supporting the extension, is either
+a <tt class="docutils literal">reject</tt> or a <tt class="docutils literal">data</tt> message. The response MUST have the same <tt class="docutils literal">piece</tt>
+as the request did.</p>
+<p>A peer MUST verify that any piece it sends passes the info-hash verification.
+i.e. until the peer has the entire metadata, it cannot run SHA-1 to verify that
+it yields the same hash as the info-hash. Peers that do not have the entire
+metadata MUST respond with a <tt class="docutils literal">reject</tt> message to any metadata request.</p>
+<p>Example:</p>
+<pre class="literal-block">
+{'msg_type': 0, 'piece': 0}
+d8:msg_typei0e5:piecei0ee
+</pre>
+<p>That request message requests the first metadata piece.</p>
+</div>
+<div class="section" id="data">
+<h2>data</h2>
+<p>The <tt class="docutils literal">data</tt> message adds another entry to the dictionary, &quot;total_size&quot;. This
+key has the same semantics as the &quot;metadata_size&quot; in the extension header. This
+is an integer.</p>
+<p>The metadata piece is appended to the bencoded dictionary, it is not a part of
+the dictionary, but it is a part of the message (the length prefix MUST include it).</p>
+<p>If the piece is the last piece of the metadata, it may be less than 16kiB. If it
+is not the last piece of the metadata, it MUST be 16kiB.</p>
+<p>Example:</p>
+<pre class="literal-block">
+{'msg_type': 1, 'piece': 0, 'total_size': 3425}
+d8:msg_typei1e5:piecei0e10:total_sizei34256eexxxxxxxx...
+</pre>
+<p>The <tt class="docutils literal">x</tt> represents binary data (the metadata).</p>
+</div>
+<div class="section" id="reject">
+<h2>reject</h2>
+<p>The <tt class="docutils literal">reject</tt> message does not have any additional keys in its message.
+It SHOULD be interpreted as the peer does not have the piece of metadata
+that was requested.</p>
+<p>Clients MAY implement flood protection by rejecting <tt class="docutils literal">request</tt> messages
+after a certain number of them have been served. Typically the number of
+pieces of metadata times a factor.</p>
+<p>Example:</p>
+<pre class="literal-block">
+{'msg_type': 2, 'piece': 0}
+d8:msg_typei1e5:piecei0ee
+</pre>
+</div>
+</div>
+<div class="section" id="magnet-uri-format">
+<h1>magnet URI format</h1>
+<p>The magnet URI format is:</p>
+<pre class="literal-block">
+v1: magnet:?xt=urn:btih:&lt;info-hash&gt;&amp;dn=&lt;name&gt;&amp;tr=&lt;tracker-url&gt;&amp;x.pe=&lt;peer-address&gt;
+v2: magnet:?xt=urn:btmh:&lt;tagged-info-hash&gt;&amp;dn=&lt;name&gt;&amp;tr=&lt;tracker-url&gt;&amp;x.pe=&lt;peer-address&gt;
+</pre>
+<dl class="docutils">
+<dt>&lt;info-hash&gt;</dt>
+<dd>Is the info-hash hex encoded, for a total of 40 characters. For
+compatability with existing links in the wild, clients should also
+support the 32 character <a class="reference external" href="http://www.ietf.org/rfc/rfc3548.txt">base32</a> encoded info-hash.</dd>
+<dt>&lt;tagged-info-hash&gt;</dt>
+<dd>Is the <a class="reference external" href="https://github.com/multiformats/multihash">multihash</a> formatted, hex encoded full infohash
+for torrents in the new metadata format. 'btmh' and 'btih'
+exact topics may exist in the same magnet if they describe
+the same hybrid torrent.</dd>
+<dt>&lt;peer-address&gt;</dt>
+<dd>A peer address expressed as <tt class="docutils literal">hostname:port</tt>, <tt class="docutils literal"><span class="pre">ipv4-literal:port</span></tt> or <tt class="docutils literal"><span class="pre">[ipv6-literal]:port</span></tt>.
+This parameter can be included to initiate a direct metadata transfer between two clients while reducing the need for external peer sources.
+It should only be included if the client can discover its public IP address and determine its reachability.
+Note: Since no URI scheme identifier has been allocated for bittorrent <tt class="docutils literal">xs=</tt> is not used for this purpose.</dd>
+</dl>
+<p><tt class="docutils literal">xt</tt> is the only mandatory parameter. <tt class="docutils literal">dn</tt> is the display name that may be
+used by the client to display while waiting for metadata. <tt class="docutils literal">tr</tt> is a tracker
+url, if there is one. If there are multiple trackers, multiple <tt class="docutils literal">tr</tt> entries
+may be included. The same applies for <tt class="docutils literal">x.pe</tt> entries.</p>
+<p><tt class="docutils literal">dn</tt>, <tt class="docutils literal">tr</tt> and <tt class="docutils literal">x.pe</tt> are all optional.</p>
+<p>If no tracker is specified, the client SHOULD use the DHT (<a class="reference external" href="http://www.bittorrent.org/beps/bep_0005.html">BEP 0005</a>) to acquire peers.</p>
+</div>
+<div class="section" id="references">
+<h1>References</h1>
+</div>
+<div class="section" id="copyright">
+<h1>Copyright</h1>
+<p>This document has been placed in the public domain.</p>
+<!-- Local Variables:
+mode: indented-text
+indent-tabs-mode: nil
+sentence-end-double-space: t
+fill-column: 70
+coding: utf-8
+End: -->
+</div>
+
+</div>
+	<div id="footer">
+<hr/>
+</div>
+
+</div>
+</body>
+</html>

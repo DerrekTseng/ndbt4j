@@ -1,0 +1,354 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="generator" content="Docutils 0.14: http://docutils.sourceforge.net/" />
+<title>bep_0015.rst_post</title>
+<meta name="author" content="Olaf van der Spek &lt;olafvdspek&#64;gmail.com&gt;" />
+<link rel="stylesheet" href="../css/bep.css" type="text/css" />
+</head>
+<body>
+<div class="document">
+
+<div id="upper" class="clear">
+<div id="wrap">
+<div id="header">
+<h1><a href="../index.html">BitTorrent<span>.org</span></a></h1>
+</div>
+<div id="nav">
+<ul>
+<li><a href="../index.html">Home</a></li>
+<li><a href="../introduction.html">For Users</a></li>
+<li><a href="bep_0000.html"><span>For Developers</span></a></li>
+<li><a href="../mailing_list.html">Developer mailing list</a> </li>
+<li><a href="http://forum.bittorrent.org"> Forums (archive) </a></li>
+</ul>
+</div> <!-- nav -->
+<!-- ### Begin Content ### -->
+<div id="second">
+
+
+<table class="docinfo" frame="void" rules="none">
+<col class="docinfo-name" />
+<col class="docinfo-content" />
+<tbody valign="top">
+<tr class="bep field"><th class="docinfo-name">BEP:</th><td class="field-body">15</td>
+</tr>
+<tr class="title field"><th class="docinfo-name">Title:</th><td class="field-body">UDP Tracker Protocol for BitTorrent</td>
+</tr>
+<tr><th class="docinfo-name">Version:</th>
+<td>023256c7581a4bed356e47caf8632be2834211bd</td></tr>
+<tr class="last-modified field"><th class="docinfo-name">Last-Modified:</th><td class="field-body">Thu Jan 12 12:29:12 2017 -0800</td>
+</tr>
+<tr><th class="docinfo-name">Author:</th>
+<td>Olaf van der Spek &lt;<a class="reference external" href="mailto:olafvdspek&#37;&#52;&#48;gmail&#46;com">olafvdspek<span>&#64;</span>gmail<span>&#46;</span>com</a>&gt;</td></tr>
+<tr><th class="docinfo-name">Status:</th>
+<td>Accepted</td></tr>
+<tr class="type field"><th class="docinfo-name">Type:</th><td class="field-body">Standards Track</td>
+</tr>
+<tr class="created field"><th class="docinfo-name">Created:</th><td class="field-body">13-Feb-2008</td>
+</tr>
+<tr class="post-history field"><th class="docinfo-name">Post-History:</th><td class="field-body">06-Nov-2016 (<a class="reference external" href="mailto:the8472&#46;bep&#37;&#52;&#48;infinite-source&#46;de">the8472<span>&#46;</span>bep<span>&#64;</span>infinite-source<span>&#46;</span>de</a>), specified IPv6 format.</td>
+</tr>
+</tbody>
+</table>
+<div class="section" id="introduction">
+<h1>Introduction</h1>
+<p>To discover other peers in a swarm a client announces it's existance
+to a tracker.  The HTTP protocol is used and a typical request
+contains the following parameters: info_hash, key, peer_id, port,
+downloaded, left, uploaded and compact.  A response contains a list of
+peers (host and port) and some other information.  The request and
+response are both quite short.  Since TCP is used, a connection has to
+be opened and closed, introducing additional overhead.</p>
+</div>
+<div class="section" id="overhead">
+<h1>Overhead</h1>
+<p>Using HTTP introduces significant overhead. There's overhead at the
+ethernet layer (14 bytes per packet), at the IP layer (20 bytes per
+packet), at the TCP layer (20 bytes per packet) and at the HTTP layer.
+About 10 packets are used for a request plus response containing 50
+peers and the total number of bytes used is about 1206 [1].  This
+overhead can be reduced significantly by using a UDP based
+protocol. The protocol proposed here uses 4 packets and about 618
+bytes, reducing traffic by 50%.  For a client, saving 1 kbyte every
+hour isn't significant, but for a tracker serving a million peers,
+reducing traffic by 50% matters a lot.  An additional advantage is
+that a UDP based binary protocol doesn't require a complex parser and
+no connection handling, reducing the complexity of tracker code and
+increasing it's performance.</p>
+</div>
+<div class="section" id="udp-connections-spoofing">
+<h1>UDP connections / spoofing</h1>
+<p>In the ideal case, only 2 packets would be necessary. However, it is
+possible to spoof the source address of a UDP packet.  The tracker has
+to ensure this doesn't occur, so it calculates a value (connection_id)
+and sends it to the client.  If the client spoofed it's source
+address, it won't receive this value (unless it's sniffing the
+network).  The connection_id will then be send to the tracker again in
+packet 3. The tracker verifies the connection_id and ignores the
+request if it doesn't match.  Connection IDs should not be guessable
+by the client. This is comparable to a TCP handshake and a syn cookie
+like approach can be used to storing the connection IDs on the tracker
+side.  A connection ID can be used for multiple requests. A client can
+use a connection ID until one minute after it has received
+it. Trackers should accept the connection ID until two minutes after
+it has been send.</p>
+</div>
+<div class="section" id="time-outs">
+<h1>Time outs</h1>
+<p>UDP is an 'unreliable' protocol. This means it doesn't retransmit lost
+packets itself. The application is responsible for this.  If a
+response is not received after 15 * 2 ^ n seconds, the client should
+retransmit the request, where n starts at 0 and is increased up to 8
+(3840 seconds) after every retransmission.  Note that it is necessary
+to rerequest a connection ID when it has expired.</p>
+</div>
+<div class="section" id="examples">
+<h1>Examples</h1>
+<p>Normal announce:</p>
+<pre class="literal-block">
+t = 0: connect request
+t = 1: connect response
+t = 2: announce request
+t = 3: announce response
+</pre>
+<p>Connect times out:</p>
+<pre class="literal-block">
+t = 0: connect request
+t = 15: connect request
+t = 45: connect request
+t = 105: connect request
+etc
+</pre>
+<p>Announce times out:</p>
+<pre class="literal-block">
+t = 0:
+t = 0: connect request
+t = 1: connect response
+t = 2: announce request
+t = 17: announce request
+t = 47: announce request
+t = 107: connect request (because connection ID expired)
+t = 227: connect request
+etc
+</pre>
+<p>Multiple requests:</p>
+<pre class="literal-block">
+t = 0: connect request
+t = 1: connect response
+t = 2: announce request
+t = 3: announce response
+t = 4: announce request
+t = 5: announce response
+t = 60: announce request
+t = 61: announce response
+t = 62: connect request
+t = 63: connect response
+t = 64: announce request
+t = 64: scrape request
+t = 64: scrape request
+t = 64: announce request
+t = 65: announce response
+t = 66: announce response
+t = 67: scrape response
+t = 68: scrape response
+</pre>
+</div>
+<div class="section" id="udp-tracker-protocol">
+<h1>UDP tracker protocol</h1>
+<p>All values are send in network byte order (big endian). Do not expect
+packets to be exactly of a certain size. Future extensions could
+increase the size of packets.</p>
+<div class="section" id="connect">
+<h2>Connect</h2>
+<p>Before announcing or scraping, you have to obtain a connection ID.</p>
+<ol class="arabic simple">
+<li>Choose a random transaction ID.</li>
+<li>Fill the connect request structure.</li>
+<li>Send the packet.</li>
+</ol>
+<p>connect request:</p>
+<pre class="literal-block">
+Offset  Size            Name            Value
+0       64-bit integer  protocol_id     0x41727101980 // magic constant
+8       32-bit integer  action          0 // connect
+12      32-bit integer  transaction_id
+16
+</pre>
+<ol class="arabic simple">
+<li>Receive the packet.</li>
+<li>Check whether the packet is at least 16 bytes.</li>
+<li>Check whether the transaction ID is equal to the one you chose.</li>
+<li>Check whether the action is connect.</li>
+<li>Store the connection ID for future use.</li>
+</ol>
+<p>connect response:</p>
+<pre class="literal-block">
+Offset  Size            Name            Value
+0       32-bit integer  action          0 // connect
+4       32-bit integer  transaction_id
+8       64-bit integer  connection_id
+16
+</pre>
+</div>
+<div class="section" id="announce">
+<h2>Announce</h2>
+<ol class="arabic simple">
+<li>Choose a random transaction ID.</li>
+<li>Fill the announce request structure.</li>
+<li>Send the packet.</li>
+</ol>
+<p>IPv4 announce request:</p>
+<pre class="literal-block">
+Offset  Size    Name    Value
+0       64-bit integer  connection_id
+8       32-bit integer  action          1 // announce
+12      32-bit integer  transaction_id
+16      20-byte string  info_hash
+36      20-byte string  peer_id
+56      64-bit integer  downloaded
+64      64-bit integer  left
+72      64-bit integer  uploaded
+80      32-bit integer  event           0 // 0: none; 1: completed; 2: started; 3: stopped
+84      32-bit integer  IP address      0 // default
+88      32-bit integer  key
+92      32-bit integer  num_want        -1 // default
+96      16-bit integer  port
+98
+</pre>
+<ol class="arabic simple">
+<li>Receive the packet.</li>
+<li>Check whether the packet is at least 20 bytes.</li>
+<li>Check whether the transaction ID is equal to the one you chose.</li>
+<li>Check whether the action is announce.</li>
+<li>Do not announce again until interval seconds have passed or an event has occurred.</li>
+</ol>
+<p>Do note that most trackers will only honor the <tt class="docutils literal">IP address</tt> field under limited circumstances.</p>
+<p>IPv4 announce response:</p>
+<pre class="literal-block">
+Offset      Size            Name            Value
+0           32-bit integer  action          1 // announce
+4           32-bit integer  transaction_id
+8           32-bit integer  interval
+12          32-bit integer  leechers
+16          32-bit integer  seeders
+20 + 6 * n  32-bit integer  IP address
+24 + 6 * n  16-bit integer  TCP port
+20 + 6 * N
+</pre>
+<div class="section" id="ipv6">
+<h3>IPv6</h3>
+<p>IPv6 announces have the same structure as v4 ones, including the used <tt class="docutils literal">action</tt> number except that the stride size of <tt class="docutils literal">&lt;IP address, TCP port&gt;</tt> pairs in the response is 18 bytes instead of 6.</p>
+<p>That means the <tt class="docutils literal">IP address</tt> field in the request remains 32bits wide which makes this field not usable under IPv6 and thus should always be set to 0.</p>
+<p>Which format is used is determined by the address family of the underlying UDP packet. I.e. packets from a v4 address use the v4 format, those from a v6 address use the v6 format.</p>
+<p>Clients that resolve hostnames to v4 and v6 and then announce to both should use the same <tt class="docutils literal">key</tt> for both so that trackers that care about accurate statistics-keeping can match the two announces.</p>
+</div>
+</div>
+<div class="section" id="scrape">
+<h2>Scrape</h2>
+<p>Up to about 74 torrents can be scraped at once. A full scrape can't be done with this protocol.</p>
+<ol class="arabic simple">
+<li>Choose a random transaction ID.</li>
+<li>Fill the scrape request structure.</li>
+<li>Send the packet.</li>
+</ol>
+<p>scrape request:</p>
+<pre class="literal-block">
+Offset          Size            Name            Value
+0               64-bit integer  connection_id
+8               32-bit integer  action          2 // scrape
+12              32-bit integer  transaction_id
+16 + 20 * n     20-byte string  info_hash
+16 + 20 * N
+</pre>
+<ol class="arabic simple">
+<li>Receive the packet.</li>
+<li>Check whether the packet is at least 8 bytes.</li>
+<li>Check whether the transaction ID is equal to the one you chose.</li>
+<li>Check whether the action is scrape.</li>
+</ol>
+<p>scrape response:</p>
+<pre class="literal-block">
+Offset      Size            Name            Value
+0           32-bit integer  action          2 // scrape
+4           32-bit integer  transaction_id
+8 + 12 * n  32-bit integer  seeders
+12 + 12 * n 32-bit integer  completed
+16 + 12 * n 32-bit integer  leechers
+8 + 12 * N
+</pre>
+<p>If the tracker encounters an error, it might send an error packet.</p>
+<ol class="arabic simple">
+<li>Receive the packet.</li>
+<li>Check whether the packet is at least 8 bytes.</li>
+<li>Check whether the transaction ID is equal to the one you chose.</li>
+</ol>
+</div>
+<div class="section" id="errors">
+<h2>Errors</h2>
+<p>error response:</p>
+<pre class="literal-block">
+Offset  Size            Name            Value
+0       32-bit integer  action          3 // error
+4       32-bit integer  transaction_id
+8       string  message
+</pre>
+</div>
+</div>
+<div class="section" id="existing-implementations">
+<h1>Existing implementations</h1>
+<p>Azureus, libtorrent [2], opentracker [3], XBT Client and XBT Tracker
+support this protocol.</p>
+</div>
+<div class="section" id="extensions">
+<h1>Extensions</h1>
+<p>Extension bits or a version field are not included. Clients and
+trackers should not assume packets to be of a certain size. This way,
+additional fields can be added without breaking compatibility.</p>
+<p>See BEP 41 [4] for an extension negotiation protocol.</p>
+</div>
+<div class="section" id="references-and-footnotes">
+<h1>References and Footnotes</h1>
+<table class="docutils footnote" frame="void" id="id1" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label">[1]</td><td><a class="reference external" href="http://xbtt.sourceforge.net/udp_tracker_protocol.html">http://xbtt.sourceforge.net/udp_tracker_protocol.html</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id2" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label">[2]</td><td><a class="reference external" href="http://www.rasterbar.com/products/libtorrent/udp_tracker_protocol.html">http://www.rasterbar.com/products/libtorrent/udp_tracker_protocol.html</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id3" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label">[3]</td><td><a class="reference external" href="http://opentracker.blog.h3q.com/">http://opentracker.blog.h3q.com/</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id4" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label">[4]</td><td><a class="reference external" href="http://bittorrent.org/beps/bep_0041.html">http://bittorrent.org/beps/bep_0041.html</a></td></tr>
+</tbody>
+</table>
+<!-- Local Variables:
+mode: indented-text
+indent-tabs-mode: nil
+sentence-end-double-space: t
+fill-column: 70
+coding: utf-8
+End: -->
+</div>
+
+</div>
+	<div id="footer">
+<hr/>
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="generator" content="Docutils 0.14: http://docutils.sourceforge.net/" />
+<title>bep_0021.rst_post</title>
+<meta name="author" content="Arvid Norberg &lt;arvid&#64;bittorrent.com&gt;, Greg Hazel &lt;greg&#64;bittorrent.com&gt;, Aaron Grunthal" />
+<link rel="stylesheet" href="../css/bep.css" type="text/css" />
+</head>
+<body>
+<div class="document">
+
+<div id="upper" class="clear">
+<div id="wrap">
+<div id="header">
+<h1><a href="../index.html">BitTorrent<span>.org</span></a></h1>
+</div>
+<div id="nav">
+<ul>
+<li><a href="../index.html">Home</a></li>
+<li><a href="../introduction.html">For Users</a></li>
+<li><a href="bep_0000.html"><span>For Developers</span></a></li>
+<li><a href="../mailing_list.html">Developer mailing list</a> </li>
+<li><a href="http://forum.bittorrent.org"> Forums (archive) </a></li>
+</ul>
+</div> <!-- nav -->
+<!-- ### Begin Content ### -->
+<div id="second">
+
+
+<table class="docinfo" frame="void" rules="none">
+<col class="docinfo-name" />
+<col class="docinfo-content" />
+<tbody valign="top">
+<tr class="bep field"><th class="docinfo-name">BEP:</th><td class="field-body">21</td>
+</tr>
+<tr class="title field"><th class="docinfo-name">Title:</th><td class="field-body">Extension for partial seeds</td>
+</tr>
+<tr><th class="docinfo-name">Version:</th>
+<td>9c5c1dd1b372016e05af84fb34fccac6752ef54a</td></tr>
+<tr class="last-modified field"><th class="docinfo-name">Last-Modified:</th><td class="field-body">Thu Jul 21 10:45:38 2016 -0400</td>
+</tr>
+<tr><th class="docinfo-name">Author:</th>
+<td>Arvid Norberg &lt;<a class="reference external" href="mailto:arvid&#37;&#52;&#48;bittorrent&#46;com">arvid<span>&#64;</span>bittorrent<span>&#46;</span>com</a>&gt;, Greg Hazel &lt;<a class="reference external" href="mailto:greg&#37;&#52;&#48;bittorrent&#46;com">greg<span>&#64;</span>bittorrent<span>&#46;</span>com</a>&gt;, Aaron Grunthal</td></tr>
+<tr><th class="docinfo-name">Status:</th>
+<td>Draft</td></tr>
+<tr class="type field"><th class="docinfo-name">Type:</th><td class="field-body">Standards Track</td>
+</tr>
+<tr class="created field"><th class="docinfo-name">Created:</th><td class="field-body">8-May-2008</td>
+</tr>
+<tr class="post-history field"><th class="docinfo-name">Post-History:</th><td class="field-body"></td>
+</tr>
+</tbody>
+</table>
+<p>The purpose of this extension is to allow further optimizations of
+bittorrent swarms when peers are <em>partial seeds</em>. A partial seed
+is a peer that is incomplete without downloading anything more. This
+happens for multi file torrents where users only download some of
+the files.</p>
+<div class="section" id="extension-header">
+<h1>Extension Header</h1>
+<p>A peer that is a partial seed SHOULD include an extra header in the extension
+handshake (specified in <a class="reference external" href="http://www.bittorrent.org/beps/bep_0010.html">BEP 0010</a>), 'upload_only'. Setting the value of
+this key to 1 indicates that this peer is not interested in downloading anything.</p>
+<p>Example extension handshake message:</p>
+<pre class="literal-block">
+{'m': {'ut_metadata', 3}, 'upload_only': 1}
+</pre>
+</div>
+<div class="section" id="tracker-scrapes">
+<h1>Tracker Scrapes</h1>
+<p>The tracker scrape conventions defines three values per torrent, 'complete',
+'incomplete' and 'downloaded'. The purpose of this extensions is to let clients
+distinguish between partial seeds and downloaders, both of which currently would
+be classified as <em>incomplete</em>.</p>
+<p>If the tracker supports this extension, it MUST add a fourth field, 'downloaders'.
+This field is the number of active downloaders in the swarm, it does not include
+partial seeds. The number of partial seeds can be calculated by:
+<tt class="docutils literal">incomplete - downloaders</tt>.</p>
+</div>
+<div class="section" id="tracker-announce">
+<h1>Tracker Announce</h1>
+<p>In order to tell the tracker that a peer is a partial seed, it MUST send an
+<tt class="docutils literal">event=paused</tt> parameter in every announce while it is a partial seed.</p>
+</div>
+<div class="section" id="rationale">
+<h1>Rationale</h1>
+<p>Allowing peers to scrape a tracker and distinguish between active downloaders
+and partial seeds makes it more efficient to determine what to seed based
+on the downloader/seed ratio.</p>
+<p>The reason why every announce should contain <tt class="docutils literal">event=paused</tt> is to avoid
+relying on the state being stored in the tracker. In case there's a failure
+and a backup tracker is used, it can recover all of the swarm state because
+the clients are announcing that they are partial seeds.</p>
+</div>
+<div class="section" id="references">
+<h1>References</h1>
+</div>
+<div class="section" id="copyright">
+<h1>Copyright</h1>
+<p>This document has been placed in the public domain.</p>
+<!-- Local Variables:
+mode: indented-text
+indent-tabs-mode: nil
+sentence-end-double-space: t
+fill-column: 70
+coding: utf-8
+End: -->
+</div>
+
+</div>
+	<div id="footer">
+<hr/>
+</div>
+
+</div>
+</body>
+</html>

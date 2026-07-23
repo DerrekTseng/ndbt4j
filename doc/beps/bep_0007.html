@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="generator" content="Docutils 0.16: http://docutils.sourceforge.net/" />
+<title>bep_0007.rst_post</title>
+<meta name="author" content="Greg Hazel &lt;greg&#64;bittorrent.com&gt;, Arvid Norberg &lt;arvid&#64;bittorrent.com&gt;" />
+<link rel="stylesheet" href="../css/bep.css" type="text/css" />
+</head>
+<body>
+<div class="document">
+
+<div id="upper" class="clear">
+<div id="wrap">
+<div id="header">
+<h1><a href="../index.html">BitTorrent<span>.org</span></a></h1>
+</div>
+<div id="nav">
+<ul>
+<li><a href="../index.html">Home</a></li>
+<li><a href="../introduction.html">For Users</a></li>
+<li><a href="bep_0000.html"><span>For Developers</span></a></li>
+<li><a href="../mailing_list.html">Developer mailing list</a> </li>
+<li><a href="http://forum.bittorrent.org"> Forums (archive) </a></li>
+</ul>
+</div> <!-- nav -->
+<!-- ### Begin Content ### -->
+<div id="second">
+
+
+<table class="docinfo" frame="void" rules="none">
+<col class="docinfo-name" />
+<col class="docinfo-content" />
+<tbody valign="top">
+<tr class="bep field"><th class="docinfo-name">BEP:</th><td class="field-body">7</td>
+</tr>
+<tr class="title field"><th class="docinfo-name">Title:</th><td class="field-body">IPv6 Tracker Extension</td>
+</tr>
+<tr><th class="docinfo-name">Version:</th>
+<td>3196f6b0a8d39a0655811579b794c3ed31d6bb79</td></tr>
+<tr class="last-modified field"><th class="docinfo-name">Last-Modified:</th><td class="field-body">Fri Jan 3 14:19:00 2020 +0100</td>
+</tr>
+<tr><th class="docinfo-name">Author:</th>
+<td>Greg Hazel &lt;<a class="reference external" href="mailto:greg&#37;&#52;&#48;bittorrent&#46;com">greg<span>&#64;</span>bittorrent<span>&#46;</span>com</a>&gt;, Arvid Norberg &lt;<a class="reference external" href="mailto:arvid&#37;&#52;&#48;bittorrent&#46;com">arvid<span>&#64;</span>bittorrent<span>&#46;</span>com</a>&gt;</td></tr>
+<tr><th class="docinfo-name">Status:</th>
+<td>Draft</td></tr>
+<tr class="type field"><th class="docinfo-name">Type:</th><td class="field-body">Standards Track</td>
+</tr>
+<tr class="created field"><th class="docinfo-name">Created:</th><td class="field-body">31-Jan-2008</td>
+</tr>
+<tr class="post-history field"><th class="docinfo-name">Post-History:</th><td class="field-body">07-Sep-2017 (<a class="reference external" href="mailto:the8472&#46;bep&#37;&#52;&#48;infinite-source&#46;de">the8472<span>&#46;</span>bep<span>&#64;</span>infinite-source<span>&#46;</span>de</a>), multi-homed trackers
+, 12-mar-2020 (<a class="reference external" href="mailto:arvid&#37;&#52;&#48;libtorrent&#46;org">arvid<span>&#64;</span>libtorrent<span>&#46;</span>org</a>) discourage IP announce params and clarify announcing multiple listen interfaces</td>
+</tr>
+</tbody>
+</table>
+<p>This extension extends the tracker response to better support IPv6 peers as
+well as defines a way for multi homed machines to announce multiple addresses
+at the same time.  This proposal addresses the use case where peers
+are either on an IPv4 network running <a class="reference external" href="https://www.microsoft.com/technet/network/ipv6/teredo.mspx">Teredo</a> or peers are on
+an IPv6 network with an IPv4 tunnel interface.</p>
+<p>The key words &quot;MUST&quot;, &quot;MUST NOT&quot;, &quot;REQUIRED&quot;, &quot;SHALL&quot;, &quot;SHALL NOT&quot;, &quot;SHOULD&quot;,
+&quot;SHOULD NOT&quot;, &quot;RECOMMENDED&quot;, &quot;MAY&quot;, and &quot;OPTIONAL&quot; in this document are to
+be interpreted as described in IETF <a class="reference external" href="http://tools.ietf.org/html/rfc2119">RFC 2119</a>.</p>
+<div class="section" id="announcing">
+<h1>Announcing</h1>
+<p>An announce to the tracker should be made for each local IP address:</p>
+<blockquote>
+<ol class="arabic simple">
+<li>the client intends to receive incoming peer connections over (listens on)</li>
+<li>the client intends to publish to the tracker</li>
+<li>that can be used as the source address in packets sent to the tracker (at
+least one of the addresses the tracker hostname resolves to).</li>
+</ol>
+</blockquote>
+<p>Each announce should use the corresponding local IP address as the source
+address of the connection.</p>
+<p>The source address is set on a socket using the <tt class="docutils literal">bind()</tt> call, before connecting.</p>
+<p>This applies to TCP connections, for HTTP and HTTPS trackers, as well as UDP
+announces, to UDP trackers.</p>
+<p>The client SHOULD include a <tt class="docutils literal">key</tt> parameter in its announces.
+The key should remain the same for a particular infohash during
+a torrent session. Together with the <tt class="docutils literal">peer_id</tt> this allows trackers
+to uniquely identify clients for the purpose of statistics-keeping when they
+announce from multiple IP .</p>
+<p>The key should be generated so it has at least 32bits worth of entropy.</p>
+</div>
+<div class="section" id="ip-announce-parameters">
+<h1>IP announce parameters</h1>
+<p>An earlier version of this BEP specified new HTTP parameters to announce an
+additional address of a different address family than the source IP address of
+the tracker connection (<tt class="docutils literal">&amp;ipv4=</tt> and <tt class="docutils literal">&amp;ipv6=</tt>). These are discouraged, as
+they allow an attacker to announce a victim's IP address to launch a DDoS
+attack.</p>
+</div>
+<div class="section" id="announce-response">
+<h1>Announce Response</h1>
+<p>In case the tracker does not support the <tt class="docutils literal">compact</tt> response as
+described in <a class="reference external" href="http://www.bittorrent.org/beps/bep_0023.html">BEP-23</a>, no change is necessary. Since the
+original <tt class="docutils literal">peers</tt> response returns peer endpoints in their expanded
+string form, IPv6 addresses can be passed back this way.</p>
+<p>In case a compact response is requested, the tracker MAY add another key
+to the response; <tt class="docutils literal">peers6</tt>. This key has the same layout as <tt class="docutils literal">peers</tt> in
+compact mode, but instead of using 6 bytes per endpoint, 18 bytes are used.
+peers6 contains address-port pairs where the addresses are all IPv6.</p>
+</div>
+<div class="section" id="examples">
+<h1>Examples</h1>
+<p>Example response:</p>
+<pre class="literal-block">
+d8:intervali1800e5:peers6:iiiipp6:peers618:iiiiiiiiiiiiiiiippe
+</pre>
+</div>
+<div class="section" id="rationale">
+<h1>Rationale</h1>
+<p>The naming of <tt class="docutils literal">peers6</tt> is chosen not to collide with the current <tt class="docutils literal">peers</tt>
+response and to be backwards compatible. It is also a simple addition to the
+current response, using the same encoding.</p>
+</div>
+<div class="section" id="copyright">
+<h1>Copyright</h1>
+<p>This document has been placed in the public domain.</p>
+<!-- Local Variables:
+mode: indented-text
+indent-tabs-mode: nil
+sentence-end-double-space: t
+fill-column: 70
+coding: utf-8
+End: -->
+</div>
+
+</div>
+	<div id="footer">
+<hr/>
+</div>
+
+</div>
+</body>
+</html>
