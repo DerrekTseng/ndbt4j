@@ -80,6 +80,10 @@ final class DefaultTorrentSession implements TorrentSession {
     private static final long SNUB_TIMEOUT_NANOS = 60_000_000_000L;
     /** Per-request timeout: an individual block not delivered this long after we requested it is re-queued (retried elsewhere) rather than waiting out the connection read timeout. */
     private static final long REQUEST_TIMEOUT_NANOS = 30_000_000_000L;
+    /** Peer churn: a full-pool slot held by a peer that has delivered nothing for this many choke rounds may be recycled for a freshly discovered peer. */
+    private static final int CHURN_GRACE_ROUNDS = 3;
+    /** Peer churn: upper bound on the connector's backlog of discovered-but-not-yet-connected peers. */
+    private static final int MAX_PENDING_PEERS = 128;
 
     private final InfoHash infoHash;
     private final PeerId peerId;
@@ -127,6 +131,7 @@ final class DefaultTorrentSession implements TorrentSession {
     private final Object chokeLock = new Object();
     private volatile PeerWorker optimisticPeer;
     private int chokeRoundCounter;
+    private volatile long lastChurnNanos; // peer churn: throttles recycling to at most one eviction per choke interval (connector thread only)
     // Timing (instance fields so tests can shorten them); default to the constants above.
     private volatile long chokeIntervalMillis = CHOKE_INTERVAL_MILLIS;
     private volatile long snubTimeoutNanos = SNUB_TIMEOUT_NANOS;
@@ -773,21 +778,75 @@ final class DefaultTorrentSession implements TorrentSession {
     // ---- peer connection management ----
 
     private void connectorLoop() {
+        // Backlog of discovered-but-unconnected peers, thread-confined to this loop. Candidates are retained here
+        // (rather than dropped) while the pool is full, so peer churn can admit them once a slot is recycled.
+        java.util.ArrayDeque<PeerAddress> pending = new java.util.ArrayDeque<>();
         while (state == SessionState.FETCHING_METADATA || state == SessionState.DOWNLOADING) {
-            PeerAddress address;
+            PeerAddress fresh;
             try {
-                address = peerQueue.poll(1, TimeUnit.SECONDS);
+                fresh = peerQueue.poll(1, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 return;
             }
-            if (address == null || workers.size() >= maxPeers || bannedPeers.contains(address)) {
-                continue;
+            if (fresh != null && !bannedPeers.contains(fresh) && !workers.containsKey(fresh)) {
+                pending.offerLast(fresh);
+                while (pending.size() > MAX_PENDING_PEERS) {
+                    pending.pollFirst(); // bound the backlog; the oldest candidates are the stalest
+                }
             }
-            PeerWorker worker = new PeerWorker(address);
-            if (workers.putIfAbsent(address, worker) == null) {
-                worker.connection.start();
+            // Admit as many pending candidates as there is room for, recycling an idle slot when the pool is full.
+            while (!pending.isEmpty()) {
+                if (workers.size() >= maxPeers && !recycleIdlePeerSlot()) {
+                    break; // full and nothing worth recycling right now: keep the backlog for later
+                }
+                PeerAddress address = pending.pollFirst();
+                if (bannedPeers.contains(address) || workers.containsKey(address)) {
+                    continue;
+                }
+                PeerWorker worker = new PeerWorker(address);
+                if (workers.putIfAbsent(address, worker) == null) {
+                    worker.connection.start();
+                }
             }
         }
+    }
+
+    /**
+     * Peer churn: when the connection pool is full, free at most one slot per choke interval that is held by a
+     * download-mode peer which has delivered nothing for {@value #CHURN_GRACE_ROUNDS} rounds (past its grace
+     * period), so a freshly discovered peer can take its place. Returns true if a slot was freed. Only churns
+     * while actively downloading, and never drops a peer that contributed anything in the last round.
+     */
+    private boolean recycleIdlePeerSlot() {
+        if (state != SessionState.DOWNLOADING) {
+            return false;
+        }
+        long now = System.nanoTime();
+        long interval = chokeIntervalMillis * 1_000_000L;
+        if (now - lastChurnNanos < interval) {
+            return false; // one eviction per interval at most, so a burst of discoveries cannot mass-disconnect peers
+        }
+        long graceNanos = CHURN_GRACE_ROUNDS * interval;
+        PeerWorker worst = null;
+        for (PeerWorker worker : workers.values()) {
+            if (!worker.downloadMode || worker.recentRate != 0) {
+                continue; // keep any peer that delivered something last round
+            }
+            if (now - worker.connectedAtNanos < graceNanos) {
+                continue; // still within its grace period: give it a chance to prove itself
+            }
+            if (worst == null || worker.connectedAtNanos < worst.connectedAtNanos) {
+                worst = worker; // among idle peers, evict the one that has already had the longest chance
+            }
+        }
+        if (worst == null) {
+            return false;
+        }
+        lastChurnNanos = now;
+        PeerWorker evicted = worst;
+        LOG.log(Level.DEBUG, () -> "recycling idle peer " + evicted.connection.address() + " to admit a fresh peer");
+        evicted.connection.close(); // onClosed removes it from the pool and re-queues its outstanding blocks
+        return true;
     }
 
     /** Called by BtClient's incoming listener: takes over an already-handshaked incoming socket. */
@@ -847,6 +906,7 @@ final class DefaultTorrentSession implements TorrentSession {
         final Map<BlockRequest, Long> outstanding = new ConcurrentHashMap<>(); // block -> send time (nanos)
         final Set<Integer> allowedFast = ConcurrentHashMap.newKeySet();
         final boolean downloadMode;
+        final long connectedAtNanos = System.nanoTime(); // when this worker was created (peer-churn grace period)
         private volatile boolean peerFast;
         // per-peer statistics used by the choke algorithm
         final AtomicLong bytesFromPeer = new AtomicLong(); // bytes downloaded from this peer (leech ranking key)
