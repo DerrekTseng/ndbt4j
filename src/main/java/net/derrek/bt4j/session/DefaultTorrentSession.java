@@ -52,6 +52,7 @@ final class DefaultTorrentSession implements TorrentSession {
     private final PeerId peerId;
     private final int listenPort;
     private final int maxPeers;
+    private final net.derrek.bt4j.dht.DhtClient dht; // null = 停用
     private final List<java.net.URI> magnetTrackers;
     private final MetadataExchange metadataExchange;
     private final java.util.concurrent.CompletableFuture<Metainfo> metadataFuture = new java.util.concurrent.CompletableFuture<>();
@@ -75,6 +76,7 @@ final class DefaultTorrentSession implements TorrentSession {
     private volatile RarestFirstPicker picker;
     private volatile TrackerManager trackerManager;
     private volatile Thread connectorThread;
+    private volatile Thread dhtThread;
 
     // 速率計算（stats() 呼叫間的差分）
     private long lastRateTime = System.nanoTime();
@@ -82,12 +84,14 @@ final class DefaultTorrentSession implements TorrentSession {
     private long lastUploaded;
 
     /** .torrent 來源。 */
-    DefaultTorrentSession(Metainfo metainfo, PeerId peerId, int listenPort, int maxPeers) {
+    DefaultTorrentSession(Metainfo metainfo, PeerId peerId, int listenPort, int maxPeers,
+                          net.derrek.bt4j.dht.DhtClient dht) {
         this.infoHash = metainfo.infoHash();
         this.metainfo = metainfo;
         this.peerId = peerId;
         this.listenPort = listenPort;
         this.maxPeers = maxPeers;
+        this.dht = dht;
         this.magnetTrackers = List.of();
         this.metadataExchange = new MetadataExchange(infoHash);
         this.metadataExchange.supply(metainfo.infoDictBytes()); // 可回應他人的 metadata request
@@ -95,19 +99,22 @@ final class DefaultTorrentSession implements TorrentSession {
         this.state = SessionState.METADATA_READY;
     }
 
-    private DefaultTorrentSession(MagnetUri magnet, PeerId peerId, int listenPort, int maxPeers) {
+    private DefaultTorrentSession(MagnetUri magnet, PeerId peerId, int listenPort, int maxPeers,
+                                  net.derrek.bt4j.dht.DhtClient dht) {
         this.infoHash = magnet.infoHash();
         this.peerId = peerId;
         this.listenPort = listenPort;
         this.maxPeers = maxPeers;
+        this.dht = dht;
         this.magnetTrackers = magnet.trackers();
         this.metadataExchange = new MetadataExchange(infoHash);
         this.state = SessionState.FETCHING_METADATA;
     }
 
     /** 磁力連結來源：建立後立即開始背景取 metadata。 */
-    static DefaultTorrentSession fromMagnet(MagnetUri magnet, PeerId peerId, int listenPort, int maxPeers) {
-        DefaultTorrentSession session = new DefaultTorrentSession(magnet, peerId, listenPort, maxPeers);
+    static DefaultTorrentSession fromMagnet(MagnetUri magnet, PeerId peerId, int listenPort, int maxPeers,
+                                            net.derrek.bt4j.dht.DhtClient dht) {
+        DefaultTorrentSession session = new DefaultTorrentSession(magnet, peerId, listenPort, maxPeers, dht);
         session.beginMetadataPhase(magnet);
         return session;
     }
@@ -121,6 +128,7 @@ final class DefaultTorrentSession implements TorrentSession {
             trackerManager.start();
         }
         connectorThread = Thread.ofVirtual().name("bt4j-connect-" + infoHash.hex()).start(this::connectorLoop);
+        startDhtLoop();
     }
 
     private void onMetadataFetched(byte[] infoDictBytes) {
@@ -192,10 +200,41 @@ final class DefaultTorrentSession implements TorrentSession {
                 this.trackerManager.start();
             }
             this.connectorThread = Thread.ofVirtual().name("bt4j-connect-" + infoHash.hex()).start(this::connectorLoop);
+            startDhtLoop();
         }
         // 磁力連結情境：metadata 階段已知的 peer 直接重新排入
         for (PeerAddress peer : knownPeers) {
             peerQueue.offer(peer);
+        }
+    }
+
+    /** 週期性 DHT 找 peer；private torrent（BEP 27）不啟用。 */
+    private void startDhtLoop() {
+        Metainfo meta = metainfo;
+        if (dht == null || (meta != null && meta.isPrivate())) {
+            return;
+        }
+        dhtThread = Thread.ofVirtual().name("bt4j-dht-loop-" + infoHash.hex()).start(this::dhtLoop);
+    }
+
+    private void dhtLoop() {
+        boolean announced = false;
+        while (state == SessionState.FETCHING_METADATA || state == SessionState.DOWNLOADING) {
+            try {
+                onPeersFound(dht.findPeers(infoHash).get(60, TimeUnit.SECONDS));
+            } catch (InterruptedException e) {
+                return;
+            } catch (ExecutionException | TimeoutException ignored) {
+            }
+            if (!announced && state == SessionState.DOWNLOADING) {
+                dht.announce(infoHash, listenPort); // 背景進行，不等待
+                announced = true;
+            }
+            try {
+                Thread.sleep(60_000);
+            } catch (InterruptedException e) {
+                return;
+            }
         }
     }
 
@@ -321,6 +360,11 @@ final class DefaultTorrentSession implements TorrentSession {
         if (c != null) {
             c.interrupt();
         }
+        Thread d = dhtThread;
+        dhtThread = null;
+        if (d != null) {
+            d.interrupt();
+        }
     }
 
     // ---- tracker announce ----
@@ -398,13 +442,16 @@ final class DefaultTorrentSession implements TorrentSession {
             Metainfo meta = metainfo;
             this.downloadMode = meta != null;
             this.connection = PeerConnection.outgoing(
-                    address, infoHash, peerId, downloadMode ? meta.pieceCount() : 0, this);
+                    address, infoHash, peerId, downloadMode ? meta.pieceCount() : 0, dht != null, this);
         }
 
         @Override
         public void onHandshakeCompleted(PeerConnection conn, Handshake theirs) {
             if (theirs.supportsExtensionProtocol()) {
                 conn.send(registry.buildHandshake(metadataExchange.metadataSize().orElse(null)));
+            }
+            if (dht != null && theirs.supportsDht()) {
+                conn.send(new PeerMessage.Port(dht.port())); // 交換 DHT 節點（BEP 5）
             }
             if (downloadMode) {
                 Bitfield have = storage.completedPieces();
@@ -419,6 +466,13 @@ final class DefaultTorrentSession implements TorrentSession {
         public void onMessage(PeerConnection conn, PeerMessage message) {
             if (message instanceof PeerMessage.Extended extended) {
                 registry.dispatch(conn, extended);
+                return;
+            }
+            if (message instanceof PeerMessage.Port(int dhtPort)) {
+                if (dht != null && dhtPort > 0) {
+                    dht.addNode(new java.net.InetSocketAddress(
+                            conn.address().socketAddress().getHostString(), dhtPort));
+                }
                 return;
             }
             if (!downloadMode) {

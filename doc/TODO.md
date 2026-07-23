@@ -70,14 +70,17 @@
 - [x] `addListener` 補發 onMetadataReady（修正「metadata 秒到、listener 晚掛」的漏事件競態）
 - [x] 驗收：磁力連結端到端測試——tr= 假 tracker 全流程（列檔案、匯出 .torrent hash 不變、續接下載完成）+ x.pe 直連無 tracker 取 metadata
 
-## M7 — DHT
+## M7 — DHT ✅
 
-- [ ] `KrpcMessage` 編解碼
-- [ ] `RoutingTable`：bucket、汰換規則
-- [ ] `DhtClient`：bootstrap、迭代 get_peers、announce_peer、token 處理
-  - 已決定：內建 5 個預設 bootstrap 節點（`DhtClient.DEFAULT_BOOTSTRAP_NODES`），`BtClient.Builder.dhtBootstrapNodes()` 可覆寫；路由表隨 resume 持久化，重啟用既有節點暖機
-- [ ] `PeerMessage.Port` 整合（從 peer 學到 DHT 節點）
-- [ ] 驗收：無 tracker 的磁力連結純靠 DHT 完成下載
+- [x] `KrpcMessage` 編解碼（含 BEP 5 文件範例驗證）
+- [x] `RoutingTable`：160 bucket、K=8、逾時汰換、偏好久經考驗節點
+- [x] `DhtClient`：bootstrap（自身 id lookup、5 個預設節點可由 Builder 覆寫）、迭代 get_peers（α=3、16 輪）、
+      announce_peer + token、server 端四種 RPC 回應、token 5 分鐘紀元輪替驗證、peer store 防灌爆
+- [x] `PeerMessage.Port` 整合：握手宣告 DHT bit、互送 PORT、收到後 ping 入路由表
+- [x] session DHT 迴圈：60 秒週期 findPeers、下載開始後 announce；private torrent（BEP 27）不啟用
+- [x] 驗收（本地）：無 tracker 磁力連結靠三節點程序內 DHT 完成 metadata + 下載
+- [x] 驗收（真實世界）：使用者的無 tracker 磁力連結（第 2 組）經公共 DHT 5.5 秒取得 metadata（72MB 單檔，名稱完整解出）
+- [ ]（延後 M8）路由表隨 resume 持久化，重啟用既有節點暖機
 
 ## M8 — 做種 / 關閉上傳 / resume
 

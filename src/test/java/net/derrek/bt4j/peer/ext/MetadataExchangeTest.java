@@ -43,7 +43,7 @@ class MetadataExchangeTest {
     private static PeerConnection dummyConnection(InfoHash hash) {
         return PeerConnection.outgoing(
                 new PeerAddress(InetSocketAddress.createUnresolved("127.0.0.1", 1)),
-                hash, PeerId.generate(), 0, NOOP);
+                hash, PeerId.generate(), 0, false, NOOP);
     }
 
     private static BValue.BDictionary dict(Object... keyValues) {

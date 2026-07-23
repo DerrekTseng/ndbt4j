@@ -30,11 +30,19 @@ public final class BtClient implements AutoCloseable {
     private final PeerId peerId = PeerId.generate();
     private final int listenPort;
     private final int maxPeersPerTorrent;
+    private final DhtClient dht; // null = 停用
     private final Map<InfoHash, TorrentSession> sessions = new ConcurrentHashMap<>();
 
     private BtClient(Builder builder) {
         this.listenPort = builder.listenPort;
         this.maxPeersPerTorrent = builder.maxPeersPerTorrent;
+        if (builder.dhtEnabled) {
+            DhtClient client = new DhtClient(listenPort, builder.dhtBootstrapNodes);
+            client.start();
+            this.dht = client;
+        } else {
+            this.dht = null;
+        }
     }
 
     public static Builder builder() {
@@ -48,7 +56,7 @@ public final class BtClient implements AutoCloseable {
     public TorrentSession addMagnet(String magnetLink) {
         net.derrek.bt4j.metainfo.MagnetUri magnet = net.derrek.bt4j.metainfo.MagnetUri.parse(magnetLink);
         return sessions.computeIfAbsent(magnet.infoHash(),
-                hash -> DefaultTorrentSession.fromMagnet(magnet, peerId, listenPort, maxPeersPerTorrent));
+                hash -> DefaultTorrentSession.fromMagnet(magnet, peerId, listenPort, maxPeersPerTorrent, dht));
     }
 
     /** 加入 .torrent 檔（狀態直接 METADATA_READY）。 */
@@ -58,7 +66,7 @@ public final class BtClient implements AutoCloseable {
 
     public TorrentSession addTorrent(Metainfo metainfo) {
         return sessions.computeIfAbsent(metainfo.infoHash(),
-                hash -> new DefaultTorrentSession(metainfo, peerId, listenPort, maxPeersPerTorrent));
+                hash -> new DefaultTorrentSession(metainfo, peerId, listenPort, maxPeersPerTorrent, dht));
     }
 
     /** 伺服器重啟後由 resume 資料恢復 session（不重新下載已完成 piece）。M8 實作。 */
@@ -85,6 +93,9 @@ public final class BtClient implements AutoCloseable {
             session.close();
         }
         sessions.clear();
+        if (dht != null) {
+            dht.close();
+        }
     }
 
     public static final class Builder {

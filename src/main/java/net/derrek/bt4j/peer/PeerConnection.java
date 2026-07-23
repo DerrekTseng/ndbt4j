@@ -43,6 +43,7 @@ public final class PeerConnection implements AutoCloseable {
     private final InfoHash infoHash;
     private final PeerId localId;
     private final int pieceCount;
+    private final boolean advertiseDht;
     private final Listener listener;
     private final BlockingQueue<PeerMessage> sendQueue = new LinkedBlockingQueue<>();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -56,11 +57,13 @@ public final class PeerConnection implements AutoCloseable {
     private volatile Handshake theirHandshake;
     private Bitfield peerBitfield; // 只在讀迴圈 thread 寫入
 
-    private PeerConnection(PeerAddress address, InfoHash infoHash, PeerId localId, int pieceCount, Listener listener) {
+    private PeerConnection(PeerAddress address, InfoHash infoHash, PeerId localId, int pieceCount,
+                           boolean advertiseDht, Listener listener) {
         this.address = address;
         this.infoHash = infoHash;
         this.localId = localId;
         this.pieceCount = pieceCount;
+        this.advertiseDht = advertiseDht;
         this.listener = listener;
         // pieceCount <= 0：magnet 情境 metadata 未知，先給最小 bitfield（bitfield 訊息到達時取代）
         this.peerBitfield = new Bitfield(Math.max(1, pieceCount));
@@ -68,8 +71,8 @@ public final class PeerConnection implements AutoCloseable {
 
     /** 主動連出。建構後呼叫 {@link #start()} 才開始 IO。 */
     public static PeerConnection outgoing(PeerAddress address, InfoHash infoHash, PeerId localId,
-                                          int pieceCount, Listener listener) {
-        return new PeerConnection(address, infoHash, localId, pieceCount, listener);
+                                          int pieceCount, boolean advertiseDht, Listener listener) {
+        return new PeerConnection(address, infoHash, localId, pieceCount, advertiseDht, listener);
     }
 
     /** 被動連入（M9 實作：先讀對方 handshake 以決定所屬 torrent）。 */
@@ -96,7 +99,7 @@ public final class PeerConnection implements AutoCloseable {
             DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
 
-            out.write(Handshake.outgoing(infoHash, localId, false, true, false).encode());
+            out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, false).encode());
             out.flush();
             byte[] response = in.readNBytes(Handshake.LENGTH);
             if (response.length != Handshake.LENGTH) {

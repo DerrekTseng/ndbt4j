@@ -35,7 +35,8 @@ class EndToEndDownloadTest {
             Metainfo metainfo = TorrentFixtures.singleFile("e2e.bin", content, PIECE_LENGTH, tracker.announceUrl());
             assertEquals(bootstrap.infoHash(), metainfo.infoHash()); // announce 不影響 info-hash
 
-            try (BtClient client = BtClient.builder().listenPort(6899).maxPeersPerTorrent(5).build()) {
+            try (BtClient client = BtClient.builder().listenPort(6899).maxPeersPerTorrent(5)
+                    .dhtEnabled(false).build()) {
                 TorrentSession session = client.addTorrent(metainfo);
                 assertEquals(SessionState.METADATA_READY, session.state());
 
