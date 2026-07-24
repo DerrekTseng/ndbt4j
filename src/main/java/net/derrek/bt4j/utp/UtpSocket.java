@@ -71,10 +71,16 @@ public final class UtpSocket {
     private int recvAvailable;         // total bytes ready to read
     private int eofSeq = -1;           // sequence number of the FIN, -1 until received
     private boolean eofReached;        // in-order stream fully delivered up to (and including) the FIN
+    private int acksPending;           // in-order data received but not yet acked (delayed-ACK coalescing)
 
     // timing / congestion
-    private long baseDelay = Long.MAX_VALUE;
-    private long baseDelayResetAt;
+    // base_delay is the minimum one-way delay seen over the recent past, tracked as per-minute bucket minima so a
+    // transient low sample cannot peg it forever and a rising delay floor is followed within a few minutes.
+    private static final int BASE_DELAY_BUCKETS = 4; // ~4 minutes of history
+    private static final long BASE_DELAY_BUCKET_MICROS = 60_000_000L;
+    private final long[] baseDelayBuckets = new long[BASE_DELAY_BUCKETS];
+    private int baseDelayBucket;
+    private long baseDelayBucketStart;
     private long rttMillis;
     private long rttVarMillis;
     private long rtoMillis = INITIAL_RTO_MILLIS;
@@ -87,6 +93,7 @@ public final class UtpSocket {
         this.connIdSend = connIdSend;
         this.connIdRecv = connIdRecv;
         this.initiator = initiator;
+        java.util.Arrays.fill(baseDelayBuckets, Long.MAX_VALUE);
     }
 
     /** The connection id this socket receives on (the endpoint demultiplexes incoming packets by it). */
@@ -364,7 +371,7 @@ public final class UtpSocket {
         }
         int expected = (ackNr + 1) & 0xFFFF;
         if (UtpPacket.seqLess(seq, expected) || seq == ackNr) {
-            sendState(); // already have it (a retransmit): re-ack so the sender advances
+            sendStateNow(); // already have it (a retransmit): re-ack immediately so the sender advances
             return;
         }
         if (seq == expected) {
@@ -379,6 +386,16 @@ public final class UtpSocket {
         } else {
             reorderBuffer.put(seq, pkt.payload()); // out of order: hold it
         }
+        // Delayed ACK: coalesce in-order acks, but ack at once when there is a gap (to carry the selective ACK),
+        // when a FIN is in play (prompt teardown), or every second packet so the sender's window keeps advancing.
+        if (!reorderBuffer.isEmpty() || eofSeq >= 0 || ++acksPending >= 2) {
+            sendStateNow();
+        }
+    }
+
+    /** Sends an ACK now and clears the delayed-ACK counter. */
+    private void sendStateNow() {
+        acksPending = 0;
         sendState();
     }
 
@@ -463,19 +480,35 @@ public final class UtpSocket {
 
     private void onWindowProgress(long ackedBytes, long theirDelaySample) {
         // LEDBAT: steer max_window toward the target queuing delay using the remote's reported one-way delay.
-        long now = nowMicros();
-        if (baseDelay == Long.MAX_VALUE || theirDelaySample < baseDelay) {
-            baseDelay = theirDelaySample;
+        if (theirDelaySample <= 0) {
+            return; // the remote has no delay measurement yet (timestamp_difference 0): nothing to steer on
         }
-        if (now - baseDelayResetAt > 60_000_000L) { // re-base every minute so a rising floor is tracked
-            baseDelayResetAt = now;
-            baseDelay = theirDelaySample;
-        }
-        long ourDelay = Math.max(0, theirDelaySample - baseDelay);
+        long ourDelay = Math.max(0, theirDelaySample - baseDelay(theirDelaySample));
         double offTarget = (double) (TARGET_MICROS - ourDelay) / TARGET_MICROS;
         double windowFactor = (double) ackedBytes / Math.max(maxWindow, 1);
         double gain = MAX_CWND_INCREASE_BYTES_PER_RTT * offTarget * windowFactor;
         maxWindow = Math.max(MIN_WINDOW, (long) (maxWindow + gain));
+    }
+
+    /** Records a delay sample into the rotating per-minute buckets and returns the minimum across the window. */
+    private long baseDelay(long sample) {
+        long now = nowMicros();
+        if (baseDelayBucketStart == 0) {
+            baseDelayBucketStart = now;
+        }
+        while (now - baseDelayBucketStart >= BASE_DELAY_BUCKET_MICROS) {
+            baseDelayBucket = (baseDelayBucket + 1) % BASE_DELAY_BUCKETS;
+            baseDelayBuckets[baseDelayBucket] = Long.MAX_VALUE; // start the new minute fresh
+            baseDelayBucketStart += BASE_DELAY_BUCKET_MICROS;
+        }
+        if (sample < baseDelayBuckets[baseDelayBucket]) {
+            baseDelayBuckets[baseDelayBucket] = sample;
+        }
+        long min = Long.MAX_VALUE;
+        for (long bucket : baseDelayBuckets) {
+            min = Math.min(min, bucket);
+        }
+        return min == Long.MAX_VALUE ? sample : min;
     }
 
     // ---- sending ----
@@ -552,6 +585,9 @@ public final class UtpSocket {
         try {
             if (state == State.CLOSED || state == State.RESET) {
                 return;
+            }
+            if (acksPending > 0) {
+                sendStateNow(); // flush a coalesced ACK that has been waiting since the last tick
             }
             if (outstanding.isEmpty()) {
                 if (state == State.FIN_SENT) {

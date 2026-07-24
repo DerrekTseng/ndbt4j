@@ -2,6 +2,7 @@ package net.derrek.bt4j.utp;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -69,6 +70,46 @@ class UtpTransferTest {
     @Timeout(30)
     void transfersOverACleanLink() throws Exception {
         transfer(new DatagramSocket(0), new DatagramSocket(0), 300_000);
+    }
+
+    @Test
+    @Timeout(30)
+    void delayedAckSendsFewerAcksThanDataPackets() throws Exception {
+        // The receiver coalesces acks, so it must send materially fewer ST_STATE packets than the ST_DATA
+        // packets it receives (without delayed ACK the ratio would be ~1:1).
+        CountingDatagramSocket sender = new CountingDatagramSocket(0);
+        CountingDatagramSocket receiver = new CountingDatagramSocket(0);
+        transfer(sender, receiver, 200_000);
+
+        int dataSent = sender.count(UtpPacket.ST_DATA);
+        int acksSent = receiver.count(UtpPacket.ST_STATE);
+        assertTrue(dataSent > 50, "expected a meaningful number of data packets, got " + dataSent);
+        assertTrue(acksSent < dataSent * 0.75,
+                "delayed ACK should coalesce: " + acksSent + " acks for " + dataSent + " data packets");
+    }
+
+    /** A DatagramSocket that tallies outgoing uTP packets by type (peeking the type nibble of the first byte). */
+    private static final class CountingDatagramSocket extends DatagramSocket {
+        private final java.util.concurrent.atomic.AtomicIntegerArray counts = new java.util.concurrent.atomic.AtomicIntegerArray(5);
+
+        CountingDatagramSocket(int port) throws IOException {
+            super(port);
+        }
+
+        int count(int type) {
+            return counts.get(type);
+        }
+
+        @Override
+        public void send(DatagramPacket p) throws IOException {
+            if (p.getLength() > 0) {
+                int type = (p.getData()[p.getOffset()] >> 4) & 0x0F;
+                if (type < 5) {
+                    counts.incrementAndGet(type);
+                }
+            }
+            super.send(p);
+        }
     }
 
     @Test
