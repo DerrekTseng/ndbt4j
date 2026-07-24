@@ -95,6 +95,8 @@ final class DefaultTorrentSession implements TorrentSession {
     private static final int CHURN_LAGGARD_FRACTION_PERCENT = 10;
     /** Upper bound on remembered peer reputations. */
     private static final int MAX_REPUTATIONS = 1024;
+    /** Cap on block requests queued for upload per peer; beyond this the peer is flooding and further requests are rejected. */
+    private static final int MAX_QUEUED_UPLOADS = 256;
 
     private final InfoHash infoHash;
     private final PeerId peerId;
@@ -1035,6 +1037,9 @@ final class DefaultTorrentSession implements TorrentSession {
         final ExtensionRegistry registry;
         final PeerExchange pex; // null = disabled (metadata stage or private torrent)
         final Map<BlockRequest, Long> outstanding = new ConcurrentHashMap<>(); // block -> send time (nanos)
+        /** Block requests this peer made, drained by the uploader thread; a Cancel can still remove one from here. */
+        final BlockingQueue<BlockRequest> uploadQueue = new LinkedBlockingQueue<>();
+        private final java.util.concurrent.atomic.AtomicBoolean uploaderStarted = new java.util.concurrent.atomic.AtomicBoolean();
         final Set<Integer> allowedFast = ConcurrentHashMap.newKeySet();
         final boolean downloadMode;
         final long connectedAtNanos = System.nanoTime(); // when this worker was created (peer-churn grace period)
@@ -1135,10 +1140,13 @@ final class DefaultTorrentSession implements TorrentSession {
                 // ---- upload path: the choke algorithm decides whether to unchoke ----
                 case PeerMessage.Interested() -> runChokeRound(false);      // immediate re-evaluation on interest change
                 case PeerMessage.NotInterested() -> runChokeRound(false);   // free up a slot for other peers
-                case PeerMessage.Request(int piece, int begin, int length) -> serveBlock(conn, piece, begin, length);
+                case PeerMessage.Request(int piece, int begin, int length) -> enqueueUpload(piece, begin, length);
                 case PeerMessage.Cancel(int piece, int begin, int length) -> {
-                    // No-op: requests are served synchronously (read + enqueued on arrival), so by the time a
-                    // Cancel is processed the block is already queued or sent — there is nothing left to drop.
+                    // Drop the request if it is still queued: the peer no longer wants it (typically an endgame
+                    // duplicate it already got elsewhere), so serving it would waste our upload bandwidth.
+                    if (uploadQueue.remove(new BlockRequest(piece, begin, length))) {
+                        LOG.log(Level.TRACE, () -> "cancelled queued upload piece=" + piece + " begin=" + begin);
+                    }
                 }
                 default -> {
                     // HaveNone (peerBitfield already cleared), SuggestPiece, etc.: ignore
@@ -1293,6 +1301,48 @@ final class DefaultTorrentSession implements TorrentSession {
             fireFileCompletions(pieceIndex);
             if (picker.isComplete()) {
                 onDownloadComplete();
+            }
+        }
+
+        /**
+         * Queues an incoming block request for the uploader thread instead of serving it inline. Two reasons:
+         * a Cancel that arrives before we get to it can still drop the work, and the read loop is no longer
+         * blocked by a disk read plus upload throttling while serving, so downloading from this peer continues
+         * at full speed while we upload to it.
+         */
+        private void enqueueUpload(int pieceIndex, int begin, int length) {
+            if (uploadQueue.size() >= MAX_QUEUED_UPLOADS) {
+                reject(connection, pieceIndex, begin, length); // peer is flooding us with requests
+                return;
+            }
+            uploadQueue.offer(new BlockRequest(pieceIndex, begin, length));
+            startUploaderIfNeeded();
+        }
+
+        /** Starts the per-peer uploader lazily, so peers that never request anything cost no extra thread. */
+        private void startUploaderIfNeeded() {
+            if (uploaderStarted.compareAndSet(false, true)) {
+                Thread.ofVirtual().name("bt4j-upload-" + connection.address()).start(this::uploaderLoop);
+            }
+        }
+
+        /**
+         * Drains queued block requests. Deliberately never interrupted: it performs FileChannel reads on the
+         * storage channels shared by every peer, and an interrupt during one would close that channel for all of
+         * them. It exits on its own within the poll timeout once the connection closes.
+         */
+        private void uploaderLoop() {
+            while (!connection.isClosed() && isActive()) {
+                BlockRequest block;
+                try {
+                    block = uploadQueue.poll(1, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                if (block != null) {
+                    serveBlock(connection, block.pieceIndex(), block.begin(), block.length());
+                }
             }
         }
 
