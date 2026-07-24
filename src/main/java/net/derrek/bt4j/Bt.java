@@ -398,6 +398,24 @@ public final class Bt implements AutoCloseable {
             return this;
         }
 
+        /** Enables the uTP transport (BEP 29) alongside TCP for peer connections. Disabled by default. */
+        public Builder utpEnabled(boolean enabled) {
+            clientBuilder.utpEnabled(enabled);
+            return this;
+        }
+
+        /** Enables Local Service Discovery (BEP 14) for LAN peers. Disabled by default (multicasts on the LAN). */
+        public Builder lsdEnabled(boolean enabled) {
+            clientBuilder.lsdEnabled(enabled);
+            return this;
+        }
+
+        /** Enables automatic NAT port mapping (NAT-PMP with a UPnP fallback). Disabled by default. */
+        public Builder portMappingEnabled(boolean enabled) {
+            clientBuilder.portMappingEnabled(enabled);
+            return this;
+        }
+
         /** Global download rate limit (bytes/s). {@code <= 0} unlimited; {@code > 0} rate-limited. */
         public Builder downloadRateLimit(long bytesPerSec) {
             clientBuilder.downloadRateLimit(bytesPerSec);

@@ -24,7 +24,7 @@ public final class DebianDownloadRunner {
         Path torrent = Path.of(args.length > 0 ? args[0] : "downloads/debian.torrent");
         Path outDir = Path.of(args.length > 1 ? args[1] : "downloads");
 
-        try (Bt bt = Bt.builder().listenPort(6881).build()) {
+        try (Bt bt = Bt.builder().listenPort(6881).utpEnabled(true).build()) {
             TorrentContent content = bt.fromTorrent(torrent);
             System.out.println("[debian] content: " + content.name()
                     + " (" + content.totalSize() + " bytes)");
