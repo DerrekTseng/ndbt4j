@@ -222,7 +222,7 @@ public final class BtClient implements AutoCloseable {
 
         private int listenPort = 6881;
         private boolean dhtEnabled = true;
-        private boolean lsdEnabled = true;
+        private boolean lsdEnabled = false;
         private int maxPeersPerTorrent = 30;
         private long downloadRateLimit = -1; // default unlimited (<=0 = unlimited)
         private long uploadRateLimit = -1;   // default unlimited (0 = no uploading, <0 = unlimited)
@@ -250,9 +250,10 @@ public final class BtClient implements AutoCloseable {
         }
 
         /**
-         * Disables Local Service Discovery (BEP 14, enabled by default): LAN peer discovery over multicast.
-         * Private torrents never use LSD regardless of this setting, and it silently stays off where multicast
-         * is unavailable.
+         * Enables Local Service Discovery (BEP 14): LAN peer discovery over multicast. Disabled by default
+         * because a running client then multicasts on the local network, which is unwanted on many servers;
+         * turn it on explicitly to find same-LAN peers. Private torrents never use LSD regardless of this
+         * setting, and it silently stays off where multicast is unavailable.
          */
         public Builder lsdEnabled(boolean enabled) {
             this.lsdEnabled = enabled;
