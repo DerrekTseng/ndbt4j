@@ -221,6 +221,29 @@ class FileStorageTest {
     }
 
     @Test
+    void repeatedReadsAreConsistentAcrossTheCache(@TempDir Path tmp) throws IOException {
+        // More pieces than the read cache holds, read repeatedly and out of order: every slice must still match.
+        byte[] content = TorrentFixtures.randomBytes(10 * PIECE_LENGTH, 99);
+        Metainfo meta = TorrentFixtures.singleFile("cache.bin", content, PIECE_LENGTH, "http://t/a");
+        try (FileStorage storage = new FileStorage(meta, PieceSelection.of(meta, Set.of()), tmp)) {
+            for (int p = 0; p < meta.pieceCount(); p++) {
+                writePiece(storage, meta, content, p);
+                assertTrue(storage.verifyPiece(p));
+            }
+            for (int round = 0; round < 3; round++) {
+                for (int p = meta.pieceCount() - 1; p >= 0; p--) {
+                    int start = p * PIECE_LENGTH;
+                    assertArrayEquals(Arrays.copyOfRange(content, start, start + 100),
+                            storage.read(p, 0, 100), "piece " + p + " head, round " + round);
+                    int mid = PIECE_LENGTH / 2;
+                    assertArrayEquals(Arrays.copyOfRange(content, start + mid, start + mid + 64),
+                            storage.read(p, mid, 64), "piece " + p + " middle, round " + round);
+                }
+            }
+        }
+    }
+
+    @Test
     void flushIsSafeAndIdempotent(@TempDir Path tmp) throws IOException {
         byte[] content = TorrentFixtures.randomBytes(20000, 57);
         Metainfo meta = TorrentFixtures.singleFile("f.bin", content, PIECE_LENGTH, "http://t/a");

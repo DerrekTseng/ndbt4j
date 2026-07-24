@@ -97,6 +97,9 @@ final class DefaultTorrentSession implements TorrentSession {
     private static final int MAX_REPUTATIONS = 1024;
     /** Cap on block requests queued for upload per peer; beyond this the peer is flooding and further requests are rejected. */
     private static final int MAX_QUEUED_UPLOADS = 256;
+    /** DHT lookup cadence: brisk while the peer pool is under half full, relaxed once it is healthy. */
+    private static final long DHT_POLL_STARVED_MILLIS = 15_000;
+    private static final long DHT_POLL_RELAXED_MILLIS = 60_000;
 
     private final InfoHash infoHash;
     private final PeerId peerId;
@@ -575,11 +578,24 @@ final class DefaultTorrentSession implements TorrentSession {
                 announced = true;
             }
             try {
-                Thread.sleep(60_000);
+                Thread.sleep(dhtPollIntervalMillis());
             } catch (InterruptedException e) {
                 return;
             }
         }
+    }
+
+    /**
+     * How long to wait before the next DHT lookup. A session starved of peers searches far more often than a
+     * comfortable one: peer supply is the binding constraint on download speed, and a torrent sitting at a
+     * fraction of its connection limit has nothing to lose by looking again sooner. Once the pool is healthy the
+     * interval backs off to the relaxed default so we stop taxing the DHT.
+     */
+    private long dhtPollIntervalMillis() {
+        if (state != SessionState.FETCHING_METADATA && state != SessionState.DOWNLOADING) {
+            return DHT_POLL_RELAXED_MILLIS;
+        }
+        return workers.size() * 2 < maxPeers ? DHT_POLL_STARVED_MILLIS : DHT_POLL_RELAXED_MILLIS;
     }
 
     private boolean isActive() {

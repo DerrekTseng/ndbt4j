@@ -40,6 +40,18 @@ public final class FileStorage implements Storage {
     private final Map<Integer, byte[]> pieceBuffers = new HashMap<>();
     /** Which blocks of each buffered piece have arrived, so in-flight progress survives a restart. */
     private final Map<Integer, BitSet> partialBlocks = new HashMap<>();
+    /**
+     * Small LRU of recently uploaded pieces. While seeding, several peers typically request blocks of the same
+     * piece within moments of each other; caching whole pieces turns those into memory reads. Bounded to
+     * {@value #READ_CACHE_PIECES} pieces, so the memory cost stays proportional to the piece size.
+     */
+    private static final int READ_CACHE_PIECES = 4;
+    private final Map<Integer, byte[]> readCache = new java.util.LinkedHashMap<>(8, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Integer, byte[]> eldest) {
+            return size() > READ_CACHE_PIECES;
+        }
+    };
     private final Map<Integer, FileChannel> channels = new HashMap<>();
     private final Bitfield completed;
     private boolean closed;
@@ -168,17 +180,28 @@ public final class FileStorage implements Storage {
     }
 
     @Override
-    public synchronized byte[] read(int pieceIndex, int offset, int length) throws IOException {
-        if (!completed.get(pieceIndex)) {
-            throw new IllegalStateException("piece " + pieceIndex + " is not yet complete");
+    public byte[] read(int pieceIndex, int offset, int length) throws IOException {
+        synchronized (this) {
+            if (!completed.get(pieceIndex)) {
+                throw new IllegalStateException("piece " + pieceIndex + " is not yet complete");
+            }
+            byte[] cached = readCache.get(pieceIndex);
+            if (cached != null) {
+                // Serving several peers the same hot piece is the common seeding pattern; answer from memory.
+                return java.util.Arrays.copyOfRange(cached, offset, offset + length);
+            }
         }
-        byte[] out = new byte[length];
-        long pieceStart = (long) pieceIndex * metainfo.pieceLength() + offset;
-        int filled = readFromFiles(pieceStart, out);
-        if (filled != length) {
+        byte[] piece = new byte[metainfo.pieceLengthAt(pieceIndex)];
+        int filled = readFromFiles((long) pieceIndex * metainfo.pieceLength(), piece);
+        if (filled != piece.length) {
             throw new IllegalStateException("some bytes of piece " + pieceIndex + " are not on disk (ranges belonging to unselected files)");
         }
-        return out;
+        synchronized (this) {
+            if (!closed) {
+                readCache.put(pieceIndex, piece);
+            }
+        }
+        return java.util.Arrays.copyOfRange(piece, offset, offset + length);
     }
 
     @Override
@@ -514,6 +537,7 @@ public final class FileStorage implements Storage {
         closed = true;
         pieceBuffers.clear();
         partialBlocks.clear();
+        readCache.clear();
         IOException first = null;
         for (FileChannel channel : channels.values()) {
             try {
