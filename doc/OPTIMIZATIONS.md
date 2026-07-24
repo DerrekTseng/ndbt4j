@@ -1,60 +1,66 @@
 # Optimization Backlog
 
-Status of performance work on bt4j: what is already done, and every remaining candidate worth considering,
-ranked by expected value. Effort/Risk: S(mall) / M(edium) / L(arge).
+Status of performance work on bt4j. Effort/Risk: S(mall) / M(edium) / L(arge).
 
-## Already done
+## Done
 
-| Optimization | Commit theme |
+### Scheduling and peers
+| Optimization | Notes |
 |---|---|
-| Proper choke algorithm (tit-for-tat, optimistic unchoke, hysteresis) | choke |
-| Anti-snubbing (abandon a peer silent for 60s, redistribute its blocks) | scheduling |
-| Adaptive pipeline depth via bandwidth-delay product, RTT-tuned per peer | scheduling |
-| Per-request timeout (re-queue one stuck block instead of killing the connection) | scheduling |
-| Endgame mode + endgame Cancel (stop duplicate transfers once a block arrives) | scheduling |
-| SHA-1 piece verification outside the storage lock (concurrent hashing) | storage |
-| Verified-piece disk writes outside the storage lock (lock-free positional writes) | storage |
-| Peer churn (recycle idle connection slots for freshly discovered peers) | peers |
-| Cancellable rate-limiter waits (100ms slices + closed-connection probe) | shutdown |
+| Proper choke algorithm | tit-for-tat, optimistic unchoke, hysteresis to avoid flapping |
+| Anti-snubbing | abandon a peer silent for 60s, redistribute its blocks |
+| Adaptive pipeline depth | bandwidth-delay product, RTT-tuned per peer |
+| Per-request timeout | re-queue one stuck block instead of killing the connection |
+| Endgame mode + Cancel | stop duplicate transfers as soon as a block arrives |
+| Endgame duplicate targeting | duplicates only to peers that actually deliver (P2 #7) |
+| Peer churn | recycle idle connection slots for freshly discovered peers |
+| Reputation-aware churn | remember bytes per address across reconnects; laggard tier (P2 #6) |
+| PEX dropped hints | skip dialing peers the swarm reports gone; never disconnects a live peer (P2 #10) |
+| Local Service Discovery | BEP 14 LAN peer discovery over multicast, fail-soft (P1 #4) |
+| Adaptive DHT cadence | 15s lookups while peer-starved, 60s when healthy (P2 #9) |
 
-## Backlog
+### Storage and I/O
+| Optimization | Notes |
+|---|---|
+| SHA-1 outside the storage lock | concurrent piece hashing |
+| Disk writes outside the storage lock | lock-free positional writes |
+| Parallel recheck | resume scan fans out across cores (P1 #1) |
+| File preallocation | full length reserved on first open; fewer extents, early disk-full (P1 #2) |
+| flush() on completion | data forced to disk before completion is announced (P1 #5) |
+| Partial-piece resume | in-flight pieces survive a restart instead of being refetched (P1 #3) |
+| Seeding read cache | small LRU of hot pieces; disk read moved off the lock (P3 #18) |
 
-### P1 — clear value, reasonable effort
+### Other
+| Optimization | Notes |
+|---|---|
+| Cancellable rate-limiter waits | 100ms slices + closed-connection probe |
+| Upload queue with Cancel | serving moved off the read loop; Cancel drops queued work (P2 #11) |
+| Sequential (streaming) mode | opt-in file-order picking for preview/playback (P3 #17) |
 
-| # | Item | Benefit | Effort | Risk | Notes |
-|---|---|---|---|---|---|
-| 1 | **Parallel recheck on resume** | Startup time on large torrents: hash pieces concurrently (virtual threads) instead of one-by-one in `FileStorage.recheck()` | S | S | Pure CPU fan-out over read-only data; join at the end |
-| 2 | **File preallocation** | Fewer filesystem fragments, disk-full surfaces at start instead of mid-download | S | S | `FileChannel.write` at `length-1` or `RandomAccessFile.setLength` when a file is first opened |
-| 3 | **Persist partial-piece progress in `.bt4j`** | Resume without re-downloading up to 32 in-flight pieces (each up to pieceLength) after a stop/crash | M | M | Serialize `pieceBuffers` block bitmaps + data (or just discard data, keep received-block map and refetch missing blocks) |
-| 4 | **Local Service Discovery (BEP 14)** | Finds LAN peers (multicast announce): huge speedup when a same-LAN peer exists | M | S | UDP multicast 239.192.152.143:6771; zero effect otherwise |
-| 5 | **`fsync` before completion events** | Durability: force channels before firing `onDownloadCompleted` / deleting `.bt4j`, so a power cut cannot leave a "complete" file with unflushed pages | S | S | `FileChannel.force(false)` once per file at completion |
+## Remaining
 
-### P2 — real value, more effort or more situational
+### Deliberately not done — measure first
+These were in the backlog flagged "measure first", and that judgement still stands: implementing them
+blind is as likely to hurt as help, so they need a benchmark before any code lands.
 
-| # | Item | Benefit | Effort | Risk | Notes |
-|---|---|---|---|---|---|
-| 6 | **Reputation-aware churn** | Better slot usage in poor swarms: evict below-median (not just zero-rate) peers; remember which addresses unchoked us across reconnects | M | M | Needs anti-thrash guardrails; builds on existing churn |
-| 7 | **Endgame duplicates only to fastest peers** | Less wasted tail bandwidth: pick duplicate targets by `recentRate`/RTT instead of any peer holding the piece | S | S | Touches only the endgame branch of `RarestFirstPicker.pick` |
-| 8 | **Holepunch / NAT traversal (BEP 55)** | Reach NATed peers others cannot: more usable sources per swarm | L | M | Relay via connected peers; interacts with the extension protocol |
-| 9 | **DHT hardening** | Faster peer discovery when peer-starved: token caching, announce refresh, more aggressive lookups while under-peered | M | M | Currently a fixed 60s loop regardless of need |
-| 10 | **PEX dropped-hints** | Stop dialing peers the swarm reports as gone | S | S | Currently only "added" entries are consumed |
-| 11 | **Upload-side request queue with Cancel support** | Serve Requests from a per-peer queue drained by the writer, letting incoming Cancel actually drop pending work | M | S | Today serving is synchronous, so incoming Cancel is a documented no-op |
+| # | Item | Why not yet |
+|---|---|---|
+| 15 | Socket buffer tuning (SO_RCVBUF/SO_SNDBUF) | Manually sizing socket buffers **disables OS autotuning**, which on modern Linux and Windows is usually better than a fixed guess. A wrong value silently caps throughput on exactly the high-BDP links it is meant to help. Needs a real high-latency measurement first. |
+| 16 | Block buffer pooling | Every block currently allocates a fresh `byte[]`. Pooling adds lifetime bugs and retention risk for a gain that modern GCs (ZGC/G1) may already make negligible. Needs an allocation-rate profile under load first. |
 
-### P3 — large, speculative, or measure-first
-
-| # | Item | Benefit | Effort | Risk | Notes |
-|---|---|---|---|---|---|
-| 12 | **uTP transport (BEP 29)** | Reaches uTP-only peers; avoids bufferbloat on congested home links | L | L | A full reliable-transport implementation over UDP; biggest remaining protocol gap |
-| 13 | **IPv6 DHT (BEP 32)** | Peer discovery on IPv6-only networks | M | M | Separate routing table + `want` parameter |
-| 14 | **Super-seeding (BEP 16)** | Seeding-side efficiency for initial seeders (does not speed up downloads) | M | M | Advertise pieces selectively; only worth it for first-seed scenarios |
-| 15 | **Socket buffer tuning (SO_RCVBUF/SO_SNDBUF)** | Single-connection throughput on high-BDP paths | S | M | Measure first: manual sizing disables OS autotuning (especially on Windows) and can easily hurt |
-| 16 | **Block buffer pooling** | Less GC pressure at very high rates (each block is a fresh `byte[]`) | M | M | Measure allocation rates first; ZGC/G1 may make this unnecessary |
-| 17 | **Sequential/streaming pick mode** | Preview-while-downloading (media); not a speed optimization | M | S | API flag switching the picker order; keep rarest-first as default |
-| 18 | **Seeding read cache** | Fewer disk reads for hot pieces while seeding | M | M | The OS page cache already covers most of this; measure before building |
+### Not done — large protocol work
+| # | Item | Effort | Why not yet |
+|---|---|---|---|
+| 12 | uTP transport (BEP 29) | L | A complete reliable transport (congestion control, retransmission, windowing) over UDP — the single biggest remaining protocol gap, and far too large to land safely in one unattended pass. Deserves its own milestone with its own test suite. |
+| 8 | Holepunch / NAT traversal (BEP 55) | L | Requires relayed coordination through connected peers, and cannot be meaningfully verified without a real NATed multi-host setup — local tests would prove nothing. |
+| 13 | IPv6 DHT (BEP 32) | M | Needs a second routing table and `want` negotiation. Self-contained but sizeable; the IPv4 DHT plus BEP 7 compact IPv6 peers already cover the common cases. |
+| 14 | Super-seeding (BEP 16) | M | Seeding-side only: it helps an *initial seeder* distribute a new torrent, and does **nothing** for download speed. Correct implementation needs per-peer piece-advertisement bookkeeping tied to observing swarm propagation. |
 
 ## Guiding constraints
 
 - Zero runtime dependencies and Java-native sockets stay non-negotiable (see `CLAUDE.md`).
-- Every optimization lands with a deterministic test that fails without it, wherever feasible
-  (see `PeerChurnTest`, `EndgameCancelTest`, `AntiSnubbingTest`, `PerRequestTimeoutTest` for the pattern).
+- Every optimization lands with a deterministic test that fails without it wherever feasible
+  (`PeerChurnTest`, `EndgameCancelTest`, `AntiSnubbingTest`, `PerRequestTimeoutTest`, `UploadCancelTest`).
 - Conservative defaults: an optimization must not regress a healthy swarm to improve a pathological one.
+  This is why churn never evicts a contributing peer, endgame duplicates are withheld from idle peers, and
+  sequential mode is opt-in.
