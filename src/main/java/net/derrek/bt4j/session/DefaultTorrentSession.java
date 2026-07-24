@@ -100,6 +100,8 @@ final class DefaultTorrentSession implements TorrentSession {
     /** DHT lookup cadence: brisk while the peer pool is under half full, relaxed once it is healthy. */
     private static final long DHT_POLL_STARVED_MILLIS = 15_000;
     private static final long DHT_POLL_RELAXED_MILLIS = 60_000;
+    /** Web seed (BEP 19): give up on a mirror after this many consecutive failed piece fetches. */
+    private static final int MAX_WEBSEED_FAILURES = 5;
 
     private final InfoHash infoHash;
     private final PeerId peerId;
@@ -147,6 +149,8 @@ final class DefaultTorrentSession implements TorrentSession {
     private volatile Thread dhtThread;
     private volatile Thread pexThread;
     private volatile Thread chokeThread;
+    private volatile List<Thread> webSeedThreads = List.of();
+    private volatile java.net.http.HttpClient webSeedHttp;
 
     // choke algorithm state (guarded by chokeLock)
     private final Object chokeLock = new Object();
@@ -407,6 +411,7 @@ final class DefaultTorrentSession implements TorrentSession {
                 this.connectorThread = Thread.ofVirtual()
                         .name("bt4j-connect-" + infoHash.hex()).start(this::connectorLoop);
             }
+            startWebSeeds(); // resume mirror downloading for the newly wanted files
         }
         // Peers connected while we were complete never heard our interest; express it now, then request.
         for (PeerWorker worker : workers.values()) {
@@ -444,6 +449,7 @@ final class DefaultTorrentSession implements TorrentSession {
         startDhtLoop();
         startPexLoop();
         startLocalDiscovery();
+        startWebSeeds();
         chokeThread = Thread.ofVirtual().name("bt4j-choke-" + infoHash.hex()).start(this::chokeLoop);
     }
 
@@ -660,6 +666,90 @@ final class DefaultTorrentSession implements TorrentSession {
         return workers.size() * 2 < maxPeers ? DHT_POLL_STARVED_MILLIS : DHT_POLL_RELAXED_MILLIS;
     }
 
+    /**
+     * Starts one worker per BEP 19 web seed (HTTP mirror). Idempotent while downloading — a no-op if the workers
+     * are already running or the torrent has no url-list. Web seeds run alongside peers: each worker claims whole
+     * pieces the peers have not started and fetches them over HTTP, so a torrent with zero peers can still
+     * complete from the mirror alone.
+     */
+    private void startWebSeeds() {
+        Metainfo meta = metainfo;
+        if (meta == null || meta.webSeeds().isEmpty() || state != SessionState.DOWNLOADING) {
+            return;
+        }
+        for (Thread t : webSeedThreads) {
+            if (t.isAlive()) {
+                return; // already running
+            }
+        }
+        java.net.http.HttpClient http = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(10))
+                .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
+                .build();
+        this.webSeedHttp = http;
+        List<Thread> threads = new ArrayList<>();
+        for (java.net.URI seed : meta.webSeeds()) {
+            WebSeedSource source = new WebSeedSource(meta, seed, http);
+            threads.add(Thread.ofVirtual().name("bt4j-webseed-" + seed.getHost()).start(() -> webSeedLoop(source)));
+        }
+        this.webSeedThreads = threads;
+        LOG.log(Level.DEBUG, () -> "started " + threads.size() + " web seed(s) for " + meta.name());
+    }
+
+    private void webSeedLoop(WebSeedSource source) {
+        int failures = 0;
+        while (state == SessionState.DOWNLOADING) {
+            Optional<List<BlockRequest>> claim = picker.claimUnstartedPiece();
+            if (claim.isEmpty()) {
+                // nothing free to fetch right now (peers are covering the rest, or the download is done): back off
+                if (sleepInterruptibly(500)) {
+                    return;
+                }
+                continue;
+            }
+            List<BlockRequest> blocks = claim.get();
+            int pieceIndex = blocks.getFirst().pieceIndex();
+            try {
+                byte[] piece = source.fetchPiece(pieceIndex);
+                downloadLimiter.acquire(piece.length, () -> state != SessionState.DOWNLOADING);
+                deliverWebSeedPiece(pieceIndex, piece, blocks);
+                failures = 0;
+            } catch (InterruptedException e) {
+                picker.onRequestsAbandoned(blocks);
+                return;
+            } catch (IOException | RuntimeException e) {
+                picker.onRequestsAbandoned(blocks); // release the claim so a peer, or a later retry, can fetch it
+                LOG.log(Level.DEBUG, () -> "web seed " + source.baseUrl() + " failed piece " + pieceIndex + ": " + e.getMessage());
+                if (++failures >= MAX_WEBSEED_FAILURES) {
+                    LOG.log(Level.DEBUG, () -> "disabling web seed " + source.baseUrl() + " after repeated failures");
+                    return;
+                }
+                if (sleepInterruptibly(2000)) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /** Feeds a whole piece fetched from a web seed into the same buffer/verify pipeline peers use. */
+    private void deliverWebSeedPiece(int pieceIndex, byte[] piece, List<BlockRequest> blocks) {
+        for (BlockRequest block : blocks) {
+            byte[] data = java.util.Arrays.copyOfRange(piece, block.begin(), block.begin() + block.length());
+            downloadedBytes.addAndGet(data.length);
+            storage.write(pieceIndex, block.begin(), data);
+            picker.onBlockReceived(block).ifPresent(this::completePiece);
+        }
+    }
+
+    private static boolean sleepInterruptibly(long millis) {
+        try {
+            Thread.sleep(millis);
+            return false;
+        } catch (InterruptedException e) {
+            return true;
+        }
+    }
+
     private boolean isActive() {
         return state == SessionState.FETCHING_METADATA
                 || state == SessionState.DOWNLOADING
@@ -835,6 +925,11 @@ final class DefaultTorrentSession implements TorrentSession {
     private void teardownPeerMachinery() {
         if (lsd != null) {
             lsd.unregister(infoHash);
+        }
+        List<Thread> seeds = webSeedThreads;
+        webSeedThreads = List.of();
+        for (Thread t : seeds) {
+            t.interrupt(); // wakes a sleeping/backing-off worker; an in-flight HTTP fetch ends on interrupt too
         }
         for (PeerWorker worker : workers.values()) {
             worker.connection.close();
@@ -1365,35 +1460,8 @@ final class DefaultTorrentSession implements TorrentSession {
             if (picker.isEndgameFast()) {
                 cancelBlockElsewhere(block, this);
             }
-            completed.ifPresent(this::completePiece);
+            completed.ifPresent(DefaultTorrentSession.this::completePiece);
             fillPipeline();
-        }
-
-        private void completePiece(int pieceIndex) {
-            boolean valid;
-            try {
-                valid = storage.verifyPiece(pieceIndex);
-            } catch (IOException e) {
-                fail(e);
-                return;
-            }
-            picker.onPieceVerified(pieceIndex, valid);
-            Set<PeerAddress> contributors = pieceContributors.remove(pieceIndex);
-            if (!valid) {
-                // piece SHA-1 failed: strike the contributing peers, banning them once they hit the threshold
-                if (contributors != null) {
-                    for (PeerAddress contributor : contributors) {
-                        strikePeer(contributor);
-                    }
-                }
-                return; // the piece is re-enqueued
-            }
-            verifiedWantedBytes.addAndGet(selection.wantedBytesInPiece(pieceIndex));
-            broadcastHave(pieceIndex);
-            fireFileCompletions(pieceIndex);
-            if (picker.isComplete()) {
-                onDownloadComplete();
-            }
         }
 
         /**
@@ -1514,6 +1582,37 @@ final class DefaultTorrentSession implements TorrentSession {
             if (worker != null) {
                 worker.connection.close();
             }
+        }
+    }
+
+    /**
+     * Verifies a fully-assembled piece and, on success, records progress and broadcasts it. Shared by peer
+     * downloads and web seeds. A piece with no recorded contributors (e.g. from a web seed) that fails
+     * verification is simply re-enqueued; a peer-contributed failure strikes the contributors.
+     */
+    private void completePiece(int pieceIndex) {
+        boolean valid;
+        try {
+            valid = storage.verifyPiece(pieceIndex);
+        } catch (IOException e) {
+            fail(e);
+            return;
+        }
+        picker.onPieceVerified(pieceIndex, valid);
+        Set<PeerAddress> contributors = pieceContributors.remove(pieceIndex);
+        if (!valid) {
+            if (contributors != null) {
+                for (PeerAddress contributor : contributors) {
+                    strikePeer(contributor);
+                }
+            }
+            return; // the piece is re-enqueued
+        }
+        verifiedWantedBytes.addAndGet(selection.wantedBytesInPiece(pieceIndex));
+        broadcastHave(pieceIndex);
+        fireFileCompletions(pieceIndex);
+        if (picker.isComplete()) {
+            onDownloadComplete();
         }
     }
 

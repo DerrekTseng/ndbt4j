@@ -238,6 +238,33 @@ public final class RarestFirstPicker implements PiecePicker {
         }
     }
 
+    /**
+     * Claims a whole wanted, not-yet-verified, not-yet-started piece for a web seed to fetch in one HTTP request,
+     * marking all its blocks requested so peers do not also fetch it. Empty when nothing is free to claim (peers
+     * have started everything that remains, or the in-progress cap is reached). Returns the block list so the
+     * caller can release them via {@link #onRequestsAbandoned} if the HTTP fetch fails.
+     */
+    public synchronized Optional<List<BlockRequest>> claimUnstartedPiece() {
+        if (active.size() >= MAX_ACTIVE_PIECES) {
+            return Optional.empty();
+        }
+        for (int p = 0; p < availability.length; p++) {
+            if (!selection.isWanted(p) || verified.get(p) || active.containsKey(p)) {
+                continue;
+            }
+            PieceProgress progress = new PieceProgress(blockCount(p));
+            progress.requested.set(0, progress.blockCount);
+            active.put(p, progress);
+            endgame = false;
+            List<BlockRequest> blocks = new ArrayList<>(progress.blockCount);
+            for (int b = 0; b < progress.blockCount; b++) {
+                blocks.add(blockRequest(p, b));
+            }
+            return Optional.of(blocks);
+        }
+        return Optional.empty();
+    }
+
     private BlockRequest blockRequest(int pieceIndex, int blockIndex) {
         int pieceLength = metainfo.pieceLengthAt(pieceIndex);
         int begin = blockIndex * BlockRequest.BLOCK_SIZE;

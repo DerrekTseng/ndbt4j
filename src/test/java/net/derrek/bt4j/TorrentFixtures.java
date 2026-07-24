@@ -68,6 +68,20 @@ public final class TorrentFixtures {
         }
     }
 
+    /** Single-file torrent carrying a BEP 19 url-list web seed. */
+    public static Metainfo singleFileWithWebSeed(String name, byte[] content, int pieceLength,
+                                                 String announce, String webSeedUrl) {
+        BValue.BDictionary info = dict(
+                "length", new BValue.BInteger(content.length),
+                "name", BValue.BString.of(name),
+                "piece length", new BValue.BInteger(pieceLength),
+                "pieces", new BValue.BString(pieceHashes(content, pieceLength)));
+        return Metainfo.parse(Bencode.encode(dict(
+                "announce", BValue.BString.of(announce),
+                "info", info,
+                "url-list", BValue.BString.of(webSeedUrl))));
+    }
+
     public static byte[] randomBytes(int length, long seed) {
         byte[] data = new byte[length];
         new java.util.Random(seed).nextBytes(data);

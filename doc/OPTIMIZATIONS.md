@@ -37,6 +37,8 @@ Status of performance work on bt4j. Effort/Risk: S(mall) / M(edium) / L(arge).
 | Upload queue with Cancel | serving moved off the read loop; Cancel drops queued work (P2 #11) |
 | Sequential (streaming) mode | opt-in file-order picking for preview/playback (P3 #17) |
 | Mid-download re-selection | change selected files on a running/seeding torrent (`start()` again / `Bt.changeSelection`) |
+| NAT port mapping | NAT-PMP + UPnP-IGD, opt-in, so a NATed host accepts incoming peers |
+| Web seeds (BEP 19) | download from an HTTP mirror listed in url-list; completes even with zero peers |
 
 ## Remaining
 

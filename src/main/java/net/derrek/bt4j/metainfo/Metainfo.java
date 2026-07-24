@@ -33,12 +33,14 @@ public final class Metainfo {
     private final long pieceLength;
     private final byte[] pieces;
     private final List<List<URI>> announceList;
+    private final List<URI> webSeeds;
     private final boolean isPrivate;
 
-    private Metainfo(byte[] infoDictBytes, List<List<URI>> announceList) {
+    private Metainfo(byte[] infoDictBytes, List<List<URI>> announceList, List<URI> webSeeds) {
         this.infoDictBytes = infoDictBytes;
         this.infoHash = InfoHash.ofInfoDict(infoDictBytes);
         this.announceList = announceList;
+        this.webSeeds = webSeeds;
 
         if (!(Bencode.decode(infoDictBytes) instanceof BValue.BDictionary info)) {
             throw new IllegalArgumentException("info must be a dictionary");
@@ -75,7 +77,7 @@ public final class Metainfo {
             throw new IllegalArgumentException(".torrent top level must be a dictionary");
         }
         byte[] infoBytes = extractInfoRawBytes(torrentFileBytes);
-        return new Metainfo(infoBytes, parseAnnounceList(outer));
+        return new Metainfo(infoBytes, parseAnnounceList(outer), parseWebSeeds(outer));
     }
 
     public static Metainfo parse(Path torrentFile) {
@@ -94,7 +96,7 @@ public final class Metainfo {
      */
     public static Metainfo fromInfoDict(byte[] infoDictBytes, List<URI> trackers) {
         List<List<URI>> tiers = trackers.isEmpty() ? List.of() : List.of(List.copyOf(trackers));
-        return new Metainfo(infoDictBytes.clone(), tiers);
+        return new Metainfo(infoDictBytes.clone(), tiers, List.of()); // magnet links carry no url-list
     }
 
     /** Scan the top-level dict entry by entry, taking the raw byte span of the info value (the subject of the info-hash computation). */
@@ -137,6 +139,29 @@ public final class Metainfo {
             return toUri(announce.utf8()).map(uri -> List.of(List.of(uri))).orElse(List.of());
         }
         return List.of();
+    }
+
+    /** url-list (BEP 19 web seeds): a single URL string or a list of them. Unparseable/non-http entries are ignored. */
+    private static List<URI> parseWebSeeds(BValue.BDictionary outer) {
+        BValue value = outer.get("url-list").orElse(null);
+        List<URI> result = new ArrayList<>();
+        if (value instanceof BValue.BString single) {
+            toWebSeedUri(single.utf8()).ifPresent(result::add);
+        } else if (value instanceof BValue.BList list) {
+            for (BValue item : list.values()) {
+                if (item instanceof BValue.BString url) {
+                    toWebSeedUri(url.utf8()).ifPresent(result::add);
+                }
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static java.util.Optional<URI> toWebSeedUri(String s) {
+        return toUri(s).filter(uri -> {
+            String scheme = uri.getScheme();
+            return scheme != null && (scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"));
+        });
     }
 
     private static java.util.Optional<URI> toUri(String s) {
@@ -262,6 +287,11 @@ public final class Metainfo {
         return announceList;
     }
 
+    /** HTTP/HTTPS web seeds (BEP 19 url-list): alternative sources served over HTTP range requests. May be empty. */
+    public List<URI> webSeeds() {
+        return webSeeds;
+    }
+
     /** private flag (BEP 27). When true, DHT / PEX / LSD must not be used. */
     public boolean isPrivate() {
         return isPrivate;
@@ -298,6 +328,12 @@ public final class Metainfo {
         }
         writeBString(out, "info");
         out.writeBytes(infoDictBytes);
+        // top-level key order: "info" < "url-list"
+        if (!webSeeds.isEmpty()) {
+            writeBString(out, "url-list");
+            out.writeBytes(Bencode.encode(new BValue.BList(webSeeds.stream()
+                    .map(uri -> (BValue) BValue.BString.of(uri.toString())).toList())));
+        }
         out.write('e');
         return out.toByteArray();
     }
