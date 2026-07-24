@@ -101,6 +101,7 @@ final class DefaultTorrentSession implements TorrentSession {
     private final int listenPort;
     private final int maxPeers;
     private final DhtClient dht; // null = disabled
+    private final net.derrek.bt4j.lsd.LocalServiceDiscovery lsd; // null = disabled or unavailable
     private final net.derrek.bt4j.util.RateLimiter downloadLimiter;
     private final net.derrek.bt4j.util.RateLimiter uploadLimiter;
     private final List<java.net.URI> magnetTrackers;
@@ -163,6 +164,7 @@ final class DefaultTorrentSession implements TorrentSession {
 
     /** The shared runtime environment at the BtClient level (peer id, listen port, DHT, rate limiters, etc.). */
     record Runtime(PeerId peerId, int listenPort, int maxPeers, DhtClient dht,
+                   net.derrek.bt4j.lsd.LocalServiceDiscovery lsd,
                    net.derrek.bt4j.util.RateLimiter downloadLimiter,
                    net.derrek.bt4j.util.RateLimiter uploadLimiter) {
     }
@@ -175,6 +177,7 @@ final class DefaultTorrentSession implements TorrentSession {
         this.listenPort = runtime.listenPort();
         this.maxPeers = runtime.maxPeers();
         this.dht = runtime.dht();
+        this.lsd = runtime.lsd();
         this.downloadLimiter = runtime.downloadLimiter();
         this.uploadLimiter = runtime.uploadLimiter();
         this.magnetTrackers = List.of();
@@ -190,6 +193,7 @@ final class DefaultTorrentSession implements TorrentSession {
         this.listenPort = runtime.listenPort();
         this.maxPeers = runtime.maxPeers();
         this.dht = runtime.dht();
+        this.lsd = runtime.lsd();
         this.downloadLimiter = runtime.downloadLimiter();
         this.uploadLimiter = runtime.uploadLimiter();
         this.magnetTrackers = magnet.trackers();
@@ -370,6 +374,7 @@ final class DefaultTorrentSession implements TorrentSession {
         }
         startDhtLoop();
         startPexLoop();
+        startLocalDiscovery();
         chokeThread = Thread.ofVirtual().name("bt4j-choke-" + infoHash.hex()).start(this::chokeLoop);
     }
 
@@ -383,6 +388,11 @@ final class DefaultTorrentSession implements TorrentSession {
                 return;
             }
             runChokeRound(true);
+            // Driven from here rather than the DHT loop so LAN discovery still works with DHT disabled;
+            // the call self-throttles to the BEP 14 minimum of one announce per torrent every 5 minutes.
+            if (lsd != null && (state == SessionState.DOWNLOADING || state == SessionState.FETCHING_METADATA)) {
+                lsd.announce(infoHash);
+            }
             if (state == SessionState.DOWNLOADING) {
                 long now = System.nanoTime();
                 for (PeerWorker worker : workers.values()) {
@@ -529,6 +539,19 @@ final class DefaultTorrentSession implements TorrentSession {
             return;
         }
         dhtThread = Thread.ofVirtual().name("bt4j-dht-loop-" + infoHash.hex()).start(this::dhtLoop);
+    }
+
+    /**
+     * Local Service Discovery (BEP 14): register for LAN peer announcements. Like DHT and PEX, it is skipped for
+     * private torrents (BEP 27). Announces themselves are driven from the periodic loop and self-throttle to the
+     * BEP-mandated 5 minute minimum.
+     */
+    private void startLocalDiscovery() {
+        Metainfo meta = metainfo;
+        if (lsd == null || (meta != null && meta.isPrivate())) {
+            return;
+        }
+        lsd.register(infoHash, this::onPeersFound);
     }
 
     private void dhtLoop() {
@@ -716,6 +739,9 @@ final class DefaultTorrentSession implements TorrentSession {
 
     /** Tears down connections, the tracker scheduler, and the connector (leaves the state unchanged, up to the caller). */
     private void teardownPeerMachinery() {
+        if (lsd != null) {
+            lsd.unregister(infoHash);
+        }
         for (PeerWorker worker : workers.values()) {
             worker.connection.close();
         }

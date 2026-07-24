@@ -39,6 +39,7 @@ public final class BtClient implements AutoCloseable {
     private final int listenPort;
     private final int maxPeersPerTorrent;
     private final DhtClient dht; // null = disabled
+    private final net.derrek.bt4j.lsd.LocalServiceDiscovery lsd; // null = disabled or unavailable
     private final net.derrek.bt4j.util.RateLimiter downloadLimiter;
     private final net.derrek.bt4j.util.RateLimiter uploadLimiter;
     private final Map<InfoHash, TorrentSession> sessions = new ConcurrentHashMap<>();
@@ -75,6 +76,16 @@ public final class BtClient implements AutoCloseable {
         } else {
             this.dht = null;
         }
+        // Local Service Discovery is fail-soft: without multicast (restricted container, firewall) it simply stays off.
+        net.derrek.bt4j.lsd.LocalServiceDiscovery discovery = null;
+        if (builder.lsdEnabled) {
+            try {
+                discovery = new net.derrek.bt4j.lsd.LocalServiceDiscovery(listenPort);
+            } catch (IOException e) {
+                LOG.log(Level.DEBUG, () -> "local service discovery unavailable: " + e.getMessage());
+            }
+        }
+        this.lsd = discovery;
         if (listenSocket != null) {
             Thread.ofVirtual().name("bt4j-accept").start(this::acceptLoop);
             LOG.log(Level.DEBUG, () -> "accepting incoming peers on TCP port " + listenPort);
@@ -142,7 +153,7 @@ public final class BtClient implements AutoCloseable {
 
     private DefaultTorrentSession.Runtime runtime() {
         return new DefaultTorrentSession.Runtime(
-                peerId, listenPort, maxPeersPerTorrent, dht, downloadLimiter, uploadLimiter);
+                peerId, listenPort, maxPeersPerTorrent, dht, lsd, downloadLimiter, uploadLimiter);
     }
 
     /** Adds a .torrent file (state goes directly to METADATA_READY). */
@@ -202,12 +213,16 @@ public final class BtClient implements AutoCloseable {
         if (dht != null) {
             dht.close();
         }
+        if (lsd != null) {
+            lsd.close();
+        }
     }
 
     public static final class Builder {
 
         private int listenPort = 6881;
         private boolean dhtEnabled = true;
+        private boolean lsdEnabled = true;
         private int maxPeersPerTorrent = 30;
         private long downloadRateLimit = -1; // default unlimited (<=0 = unlimited)
         private long uploadRateLimit = -1;   // default unlimited (0 = no uploading, <0 = unlimited)
@@ -231,6 +246,16 @@ public final class BtClient implements AutoCloseable {
         /** Disables DHT (enabled by default). Private torrents never use DHT regardless of this setting. */
         public Builder dhtEnabled(boolean enabled) {
             this.dhtEnabled = enabled;
+            return this;
+        }
+
+        /**
+         * Disables Local Service Discovery (BEP 14, enabled by default): LAN peer discovery over multicast.
+         * Private torrents never use LSD regardless of this setting, and it silently stays off where multicast
+         * is unavailable.
+         */
+        public Builder lsdEnabled(boolean enabled) {
+            this.lsdEnabled = enabled;
             return this;
         }
 
