@@ -29,7 +29,7 @@ class RateLimitDownloadTest {
 
             Metainfo meta = TorrentFixtures.singleFile("rl.bin", content, PIECE_LENGTH, tracker.announceUrl());
             // Rate limit 200 KiB/s: after subtracting the 256 KiB burst from the 600 KB content, steady state takes ~1.7s
-            try (BtClient client = BtClient.builder()
+            try (BtClient client = BtClient.builder().lsdEnabled(false)
                     .listenPort(0).dhtEnabled(false).maxPeersPerTorrent(3)
                     .downloadRateLimit(200 * 1024)
                     .build()) {

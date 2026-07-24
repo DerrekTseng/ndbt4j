@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,8 @@ public final class FileStorage implements Storage {
     private final PieceSelection selection;
     private final Path root;
     private final Map<Integer, byte[]> pieceBuffers = new HashMap<>();
+    /** Which blocks of each buffered piece have arrived, so in-flight progress survives a restart. */
+    private final Map<Integer, BitSet> partialBlocks = new HashMap<>();
     private final Map<Integer, FileChannel> channels = new HashMap<>();
     private final Bitfield completed;
     private boolean closed;
@@ -52,10 +55,54 @@ public final class FileStorage implements Storage {
      * For resume: construct with an existing set of completed pieces (their data is assumed already on disk, marked only if previously verified).
      */
     public FileStorage(Metainfo metainfo, PieceSelection selection, Path saveTo, Bitfield alreadyCompleted) {
+        this(metainfo, selection, saveTo, alreadyCompleted, Map.of());
+    }
+
+    /**
+     * For resume, including pieces that were still in flight: {@code partials} maps a piece index to the blocks
+     * of it already written to disk by {@link #persistPartialPieces()}. Those pieces are read back into their
+     * buffers so the restart continues from where it stopped instead of refetching them. The data is unverified
+     * until the piece completes and passes SHA-1, exactly as during a normal download.
+     */
+    public FileStorage(Metainfo metainfo, PieceSelection selection, Path saveTo, Bitfield alreadyCompleted,
+                       Map<Integer, BitSet> partials) {
         this.metainfo = metainfo;
         this.selection = selection;
         this.root = saveTo;
         this.completed = alreadyCompleted.copy();
+        restorePartials(partials);
+    }
+
+    private void restorePartials(Map<Integer, BitSet> partials) {
+        for (Map.Entry<Integer, BitSet> entry : partials.entrySet()) {
+            int piece = entry.getKey();
+            BitSet blocks = entry.getValue();
+            if (piece < 0 || piece >= metainfo.pieceCount() || completed.get(piece) || blocks.isEmpty()) {
+                continue;
+            }
+            if (selection.wantedBytesInPiece(piece) != metainfo.pieceLengthAt(piece)) {
+                continue; // boundary piece: was never persisted in full
+            }
+            byte[] buffer = new byte[metainfo.pieceLengthAt(piece)];
+            try {
+                if (readFromFiles((long) piece * metainfo.pieceLength(), buffer, false) != buffer.length) {
+                    continue; // the file is gone or short: just refetch the piece
+                }
+            } catch (IOException e) {
+                LOG.log(System.Logger.Level.DEBUG, () -> "could not restore partial piece " + piece + ": " + e.getMessage());
+                continue;
+            }
+            pieceBuffers.put(piece, buffer);
+            partialBlocks.put(piece, (BitSet) blocks.clone());
+        }
+        if (!partialBlocks.isEmpty()) {
+            LOG.log(System.Logger.Level.DEBUG, () -> "restored " + partialBlocks.size() + " partially downloaded pieces");
+        }
+    }
+
+    /** The restored in-flight block map, so the picker can be seeded with the same state. */
+    public synchronized Map<Integer, BitSet> restoredPartials() {
+        return partialProgress();
     }
 
     @Override
@@ -65,6 +112,59 @@ public final class FileStorage implements Storage {
         }
         byte[] buffer = pieceBuffers.computeIfAbsent(pieceIndex, p -> new byte[metainfo.pieceLengthAt(p)]);
         System.arraycopy(data, 0, buffer, offset, data.length);
+        partialBlocks.computeIfAbsent(pieceIndex, p -> new BitSet())
+                .set(offset / net.derrek.bt4j.piece.BlockRequest.BLOCK_SIZE);
+    }
+
+    /**
+     * Which blocks of each in-flight piece are held, for resume data. Only pieces that lie entirely inside
+     * selected files are reported: a boundary piece cannot be written to disk in full, so it has nothing to
+     * restore from.
+     */
+    public synchronized Map<Integer, BitSet> partialProgress() {
+        Map<Integer, BitSet> out = new HashMap<>();
+        for (Map.Entry<Integer, BitSet> entry : partialBlocks.entrySet()) {
+            int piece = entry.getKey();
+            if (completed.get(piece) || entry.getValue().isEmpty()) {
+                continue;
+            }
+            if (selection.wantedBytesInPiece(piece) != metainfo.pieceLengthAt(piece)) {
+                continue;
+            }
+            out.put(piece, (BitSet) entry.getValue().clone());
+        }
+        return out;
+    }
+
+    /**
+     * Writes the buffers of in-flight pieces to their final disk positions so a restart can pick them up.
+     * The bytes are unverified — only the blocks reported by {@link #partialProgress()} are meaningful, and the
+     * piece still has to pass SHA-1 before it is ever marked complete, so nothing can be trusted prematurely.
+     */
+    public void persistPartialPieces() throws IOException {
+        Map<Integer, byte[]> snapshot = new HashMap<>();
+        synchronized (this) {
+            if (closed) {
+                return;
+            }
+            for (int piece : partialProgress().keySet()) {
+                byte[] buffer = pieceBuffers.get(piece);
+                if (buffer != null) {
+                    snapshot.put(piece, buffer.clone()); // clone: the live buffer keeps changing as blocks arrive
+                }
+            }
+        }
+        for (Map.Entry<Integer, byte[]> entry : snapshot.entrySet()) {
+            List<WriteOp> pieceOps;
+            synchronized (this) {
+                pieceOps = planVerifiedPieceWrites(entry.getKey(), entry.getValue());
+            }
+            try {
+                executeWrites(pieceOps, entry.getValue());
+            } catch (ClosedChannelException ignored) {
+                return; // closing down
+            }
+        }
     }
 
     @Override
@@ -92,6 +192,7 @@ public final class FileStorage implements Storage {
             // can mutate the array while we hash it. Each completed piece is handed here exactly once by the
             // picker, so there is no competing verifyPiece for this same index.
             buffer = pieceBuffers.remove(pieceIndex);
+            partialBlocks.remove(pieceIndex);
             if (buffer == null) {
                 throw new IllegalStateException("piece " + pieceIndex + " has no data to verify");
             }
@@ -103,6 +204,7 @@ public final class FileStorage implements Storage {
         synchronized (this) {
             // Drop any buffer a late endgame-duplicate write() may have recreated for this piece while we hashed.
             pieceBuffers.remove(pieceIndex);
+            partialBlocks.remove(pieceIndex);
             if (!ok) {
                 LOG.log(System.Logger.Level.DEBUG, () -> "piece " + pieceIndex + " failed SHA-1 verification, discarded for re-download");
                 return false;
@@ -128,6 +230,7 @@ public final class FileStorage implements Storage {
         synchronized (this) {
             // Clean up any buffer a late endgame-duplicate write() recreated between the two critical sections.
             pieceBuffers.remove(pieceIndex);
+            partialBlocks.remove(pieceIndex);
             if (!closed) {
                 completed.set(pieceIndex);
             }
@@ -275,6 +378,7 @@ public final class FileStorage implements Storage {
         Map<Integer, FileChannel> snapshot = new HashMap<>();
         synchronized (this) {
             pieceBuffers.clear();
+            partialBlocks.clear();
             for (int p = 0; p < metainfo.pieceCount(); p++) {
                 if (completed.get(p)) {
                     continue;
@@ -409,6 +513,7 @@ public final class FileStorage implements Storage {
     public synchronized void close() throws IOException {
         closed = true;
         pieceBuffers.clear();
+        partialBlocks.clear();
         IOException first = null;
         for (FileChannel channel : channels.values()) {
             try {

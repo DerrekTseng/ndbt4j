@@ -135,7 +135,7 @@ class PeerChurnTest {
                 Metainfo meta = TorrentFixtures.singleFile("churn.bin", content, PIECE_LENGTH, announce);
 
                 // maxPeers=1: the idle peer must be evicted before the good peer can ever connect.
-                try (BtClient client = BtClient.builder().listenPort(0).dhtEnabled(false).maxPeersPerTorrent(1).build()) {
+                try (BtClient client = BtClient.builder().lsdEnabled(false).listenPort(0).dhtEnabled(false).maxPeersPerTorrent(1).build()) {
                     DefaultTorrentSession session = (DefaultTorrentSession) client.addTorrent(meta);
                     // Fast choke rounds (grace = 3 rounds = 600ms); snub and request timeouts held long so neither
                     // can rescue the idle peer's blocks -- only peer churn can.

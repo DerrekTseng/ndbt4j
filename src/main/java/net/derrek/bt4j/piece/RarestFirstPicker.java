@@ -49,6 +49,15 @@ public final class RarestFirstPicker implements PiecePicker {
      * @param alreadyHave pieces already completed (verified), e.g. progress restored on resume
      */
     public RarestFirstPicker(Metainfo metainfo, PieceSelection selection, Bitfield alreadyHave) {
+        this(metainfo, selection, alreadyHave, java.util.Map.of());
+    }
+
+    /**
+     * @param partials blocks of still-in-flight pieces already held on disk (restored from resume data). They are
+     *                 marked received so the restart requests only the blocks that are actually missing.
+     */
+    public RarestFirstPicker(Metainfo metainfo, PieceSelection selection, Bitfield alreadyHave,
+                             java.util.Map<Integer, BitSet> partials) {
         this.metainfo = metainfo;
         this.selection = selection;
         this.availability = new int[metainfo.pieceCount()];
@@ -56,6 +65,21 @@ public final class RarestFirstPicker implements PiecePicker {
         for (int p = 0; p < metainfo.pieceCount(); p++) {
             if (alreadyHave.get(p)) {
                 verified.set(p);
+            }
+        }
+        for (java.util.Map.Entry<Integer, BitSet> entry : partials.entrySet()) {
+            int piece = entry.getKey();
+            if (piece < 0 || piece >= metainfo.pieceCount() || verified.get(piece) || !selection.isWanted(piece)) {
+                continue;
+            }
+            PieceProgress progress = new PieceProgress(blockCount(piece));
+            for (int b = entry.getValue().nextSetBit(0); b >= 0 && b < progress.blockCount;
+                 b = entry.getValue().nextSetBit(b + 1)) {
+                progress.received.set(b);
+                progress.requested.set(b); // already held: never ask for it again
+            }
+            if (!progress.received.isEmpty()) {
+                active.put(piece, progress);
             }
         }
     }

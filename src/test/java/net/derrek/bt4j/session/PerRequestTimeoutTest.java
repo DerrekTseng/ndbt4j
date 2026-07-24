@@ -123,7 +123,7 @@ class PerRequestTimeoutTest {
              FakeHttpTracker tracker = new FakeHttpTracker(seeder.port())) {
 
             Metainfo meta = TorrentFixtures.singleFile("req.bin", content, PIECE_LENGTH, tracker.announceUrl());
-            try (BtClient client = BtClient.builder().listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
+            try (BtClient client = BtClient.builder().lsdEnabled(false).listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
                 DefaultTorrentSession session = (DefaultTorrentSession) client.addTorrent(meta);
                 // Fast choke round + short request timeout; long snub timeout so ONLY the request timeout can help.
                 session.setChokeTimingForTest(500, 60_000_000_000L, 1_000_000_000L);

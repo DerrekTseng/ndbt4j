@@ -39,7 +39,7 @@ class MagnetEndToEndTest {
                     + "&dn=magnet.bin"
                     + "&tr=" + URLEncoder.encode(tracker.announceUrl(), StandardCharsets.UTF_8);
 
-            try (BtClient client = BtClient.builder().listenPort(6898).maxPeersPerTorrent(5)
+            try (BtClient client = BtClient.builder().lsdEnabled(false).listenPort(6898).maxPeersPerTorrent(5)
                     .dhtEnabled(false).build()) {
                 TorrentSession session = client.addMagnet(magnet);
                 assertEquals(SessionState.FETCHING_METADATA, session.state());
@@ -92,7 +92,7 @@ class MagnetEndToEndTest {
             String magnet = "magnet:?xt=urn:btih:" + source.infoHash().hex()
                     + "&x.pe=127.0.0.1:" + seeder.port();
 
-            try (BtClient client = BtClient.builder().listenPort(6897).dhtEnabled(false).build()) {
+            try (BtClient client = BtClient.builder().lsdEnabled(false).listenPort(6897).dhtEnabled(false).build()) {
                 TorrentSession session = client.addMagnet(magnet);
                 Metainfo fetched = session.awaitMetadata(Duration.ofSeconds(20));
                 assertEquals("xpe.bin", fetched.name());

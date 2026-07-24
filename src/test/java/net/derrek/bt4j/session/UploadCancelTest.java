@@ -44,7 +44,7 @@ class UploadCancelTest {
         ResumeData resume = new ResumeData(meta.toTorrentBytes(), all, Set.of(), seederDir, 0, false, true);
 
         // Throttle uploads so the uploader thread cannot drain the queue before our cancels land.
-        try (BtClient seeder = BtClient.builder().listenPort(0).dhtEnabled(false)
+        try (BtClient seeder = BtClient.builder().lsdEnabled(false).listenPort(0).dhtEnabled(false)
                 .uploadRateLimit(32 * 1024).maxPeersPerTorrent(5).build()) {
             seeder.restore(resume);
 

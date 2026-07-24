@@ -189,6 +189,38 @@ class FileStorageTest {
     }
 
     @Test
+    void partialPieceProgressSurvivesARestart(@TempDir Path tmp) throws IOException {
+        int block = net.derrek.bt4j.piece.BlockRequest.BLOCK_SIZE;
+        int pieceLength = 4 * block; // 4 blocks per piece
+        byte[] content = TorrentFixtures.randomBytes(2 * pieceLength, 88);
+        Metainfo meta = TorrentFixtures.singleFile("partial.bin", content, pieceLength, "http://t/a");
+        PieceSelection selection = PieceSelection.of(meta, Set.of());
+
+        java.util.Map<Integer, java.util.BitSet> partials;
+        try (FileStorage first = new FileStorage(meta, selection, tmp)) {
+            // only 3 of piece 0's 4 blocks arrive before the "crash"
+            for (int b = 0; b < 3; b++) {
+                first.write(0, b * block, Arrays.copyOfRange(content, b * block, (b + 1) * block));
+            }
+            first.persistPartialPieces();
+            partials = first.partialProgress();
+            assertEquals(Set.of(0), partials.keySet());
+            assertEquals(3, partials.get(0).cardinality());
+        }
+
+        // restart: the three persisted blocks must come back, so supplying only the 4th completes the piece
+        try (FileStorage second = new FileStorage(meta, selection, tmp,
+                new net.derrek.bt4j.piece.Bitfield(meta.pieceCount()), partials)) {
+            assertEquals(3, second.restoredPartials().get(0).cardinality());
+            second.write(0, 3 * block, Arrays.copyOfRange(content, 3 * block, 4 * block));
+            assertTrue(second.verifyPiece(0),
+                    "piece should verify from restored blocks plus the one new block");
+            assertArrayEquals(Arrays.copyOfRange(content, 0, pieceLength),
+                    second.read(0, 0, pieceLength));
+        }
+    }
+
+    @Test
     void flushIsSafeAndIdempotent(@TempDir Path tmp) throws IOException {
         byte[] content = TorrentFixtures.randomBytes(20000, 57);
         Metainfo meta = TorrentFixtures.singleFile("f.bin", content, PIECE_LENGTH, "http://t/a");

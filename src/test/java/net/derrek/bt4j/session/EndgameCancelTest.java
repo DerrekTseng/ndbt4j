@@ -142,7 +142,7 @@ class EndgameCancelTest {
                 String announce = "http://127.0.0.1:" + tracker.getAddress().getPort() + "/announce";
                 Metainfo meta = TorrentFixtures.singleFile("eg.bin", content, PIECE_LENGTH, announce);
 
-                try (BtClient client = BtClient.builder().listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
+                try (BtClient client = BtClient.builder().lsdEnabled(false).listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
                     DefaultTorrentSession session = (DefaultTorrentSession) client.addTorrent(meta);
                     // Long snub AND request timeouts: neither can rescue the stalled peer's blocks, so completion
                     // is driven solely by endgame re-requests -- which is exactly what fires the cancels.

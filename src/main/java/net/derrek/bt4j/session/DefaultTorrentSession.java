@@ -236,8 +236,10 @@ final class DefaultTorrentSession implements TorrentSession {
         this.plan = new DownloadPlan(resume.saveTo(), resume.selectedFileIndices(), resume.seedAfterComplete());
         this.selection = PieceSelection.of(metainfo, resume.selectedFileIndices());
         // .bt4j resume: trust its bitfield, don't re-recheck the disk (fast resume)
-        this.storage = new FileStorage(metainfo, selection, resume.saveTo(), resume.completedPieces());
-        this.picker = new RarestFirstPicker(metainfo, selection, storage.completedPieces());
+        this.storage = new FileStorage(metainfo, selection, resume.saveTo(), resume.completedPieces(),
+                resume.partialPieces());
+        // Seed the picker with the same in-flight state, so only the genuinely missing blocks are requested.
+        this.picker = new RarestFirstPicker(metainfo, selection, storage.completedPieces(), storage.restoredPartials());
         this.uploadedBytes.set(resume.uploaded());
         recomputeVerifiedBytes();
         Bitfield completed = storage.completedPieces();
@@ -656,13 +658,25 @@ final class DefaultTorrentSession implements TorrentSession {
         }
         FileStorage st = storage;
         DownloadPlan p = plan;
+        // Flush the in-flight piece buffers to disk first, so the block map recorded below actually has data
+        // behind it and a restart resumes those pieces instead of refetching them.
+        java.util.Map<Integer, java.util.BitSet> partials = java.util.Map.of();
+        if (st != null && state == SessionState.DOWNLOADING) {
+            try {
+                st.persistPartialPieces();
+                partials = st.partialProgress();
+            } catch (IOException e) {
+                LOG.log(Level.DEBUG, () -> "could not persist partial pieces: " + e.getMessage());
+            }
+        }
         return new ResumeData(meta.toTorrentBytes(),
                 st != null ? st.completedPieces() : new Bitfield(meta.pieceCount()),
                 p == null ? Set.of() : p.selectedFileIndices(),
                 p == null ? null : p.saveTo(),
                 uploadedBytes.get(),
                 state == SessionState.STOPPED,
-                p != null && p.seedAfterComplete());
+                p != null && p.seedAfterComplete(),
+                partials);
     }
 
     @Override

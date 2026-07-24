@@ -44,7 +44,7 @@ class MagnetDhtEndToEndTest {
 
                 // Client: the magnet link has only the info-hash, so the only peer source is DHT
                 String magnet = "magnet:?xt=urn:btih:" + source.infoHash().hex();
-                try (BtClient client = BtClient.builder()
+                try (BtClient client = BtClient.builder().lsdEnabled(false)
                         .listenPort(6896)
                         .dhtBootstrapNodes(List.of(hubAddress))
                         .maxPeersPerTorrent(5)

@@ -22,7 +22,7 @@ class DhtRealWorldIntegrationTest {
 
     @Test
     void fetchMetadataFromRealSwarmViaDht() throws Exception {
-        try (BtClient client = BtClient.builder().listenPort(6895).build()) {
+        try (BtClient client = BtClient.builder().lsdEnabled(false).listenPort(6895).build()) {
             TorrentSession session = client.addMagnet(MAGNET);
             Metainfo metadata = session.awaitMetadata(Duration.ofMinutes(3));
 

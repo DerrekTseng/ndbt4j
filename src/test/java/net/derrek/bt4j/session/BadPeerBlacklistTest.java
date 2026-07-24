@@ -106,7 +106,7 @@ class BadPeerBlacklistTest {
              FakeHttpTracker tracker = new FakeHttpTracker(seeder.port())) {
 
             Metainfo leecherMeta = TorrentFixtures.singleFile("bad.bin", content, PIECE_LENGTH, tracker.announceUrl());
-            try (BtClient leecher = BtClient.builder().listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
+            try (BtClient leecher = BtClient.builder().lsdEnabled(false).listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
                 DefaultTorrentSession session = (DefaultTorrentSession) leecher.addTorrent(leecherMeta);
                 session.start(DownloadPlan.allFiles(tmp));
 

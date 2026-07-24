@@ -28,7 +28,7 @@ class SeedAndResumeTest {
     private static final int PIECE_LENGTH = 16384;
 
     private static BtClient client(int port) {
-        return BtClient.builder().listenPort(port).dhtEnabled(false).maxPeersPerTorrent(5).build();
+        return BtClient.builder().lsdEnabled(false).listenPort(port).dhtEnabled(false).maxPeersPerTorrent(5).build();
     }
 
     /** Create a seeding client: the complete file is already on disk, restored to SEEDING via resume (fully complete). */
@@ -157,7 +157,7 @@ class SeedAndResumeTest {
         ResumeData resume = new ResumeData(seederMeta.toTorrentBytes(), allComplete, Set.of(), seederDir, 0, false, true);
 
         // Seeder uploadRateLimit(0) = no uploading at all
-        try (BtClient seeder = BtClient.builder().listenPort(0).dhtEnabled(false)
+        try (BtClient seeder = BtClient.builder().lsdEnabled(false).listenPort(0).dhtEnabled(false)
                 .maxPeersPerTorrent(5).uploadRateLimit(0).build()) {
             seeder.restore(resume);
             try (FakeHttpTracker tracker = new FakeHttpTracker(seeder.listenPort())) {

@@ -122,7 +122,7 @@ class FastExtensionTest {
              FakeHttpTracker tracker = new FakeHttpTracker(seeder.port())) {
 
             Metainfo leecherMeta = TorrentFixtures.singleFile("fast.bin", content, PIECE_LENGTH, tracker.announceUrl());
-            try (BtClient leecher = BtClient.builder().listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
+            try (BtClient leecher = BtClient.builder().lsdEnabled(false).listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
                 TorrentSession session = leecher.addTorrent(leecherMeta);
                 CountDownLatch done = new CountDownLatch(1);
                 session.addListener(new SessionListener() {

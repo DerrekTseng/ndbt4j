@@ -20,6 +20,29 @@ class ResumeDataTest {
                 16384, "http://tracker.example.com/announce");
     }
 
+    @Test
+    void partialPieceMapRoundTrips() {
+        Metainfo meta = meta();
+        Bitfield completed = new Bitfield(meta.pieceCount());
+        completed.set(0);
+        java.util.BitSet blocks = new java.util.BitSet();
+        blocks.set(0);
+        blocks.set(3);
+        ResumeData data = new ResumeData(meta.toTorrentBytes(), completed, Set.of(),
+                Path.of("D:/downloads"), 0, false, true, java.util.Map.of(1, blocks));
+
+        ResumeData decoded = ResumeData.decode(data.encode());
+        assertEquals(Set.of(1), decoded.partialPieces().keySet());
+        assertEquals(blocks, decoded.partialPieces().get(1));
+    }
+
+    @Test
+    void absentPartialMapDecodesAsEmpty() {
+        // resume files written before partial-piece support must still load
+        ResumeData decoded = ResumeData.decode(sample(meta()).encode());
+        assertTrue(decoded.partialPieces().isEmpty());
+    }
+
     private static ResumeData sample(Metainfo meta) {
         Bitfield completed = new Bitfield(meta.pieceCount());
         completed.set(0);

@@ -88,7 +88,7 @@ class ChokeAlgorithmTest {
         full.setAll();
         ResumeData resume = new ResumeData(meta.toTorrentBytes(), full, Set.of(), tmp, 0, false, true);
 
-        try (BtClient seeder = BtClient.builder().listenPort(0).dhtEnabled(false).maxPeersPerTorrent(20).build()) {
+        try (BtClient seeder = BtClient.builder().lsdEnabled(false).listenPort(0).dhtEnabled(false).maxPeersPerTorrent(20).build()) {
             seeder.restore(resume);
             int port = seeder.listenPort();
 

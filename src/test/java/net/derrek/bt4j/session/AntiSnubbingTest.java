@@ -133,7 +133,7 @@ class AntiSnubbingTest {
                 String announce = "http://127.0.0.1:" + tracker.getAddress().getPort() + "/announce";
                 Metainfo meta = TorrentFixtures.singleFile("snub.bin", content, PIECE_LENGTH, announce);
 
-                try (BtClient client = BtClient.builder().listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
+                try (BtClient client = BtClient.builder().lsdEnabled(false).listenPort(0).dhtEnabled(false).maxPeersPerTorrent(5).build()) {
                     DefaultTorrentSession session = (DefaultTorrentSession) client.addTorrent(meta);
                     // Shorten timings so a snub is detected in ~1s instead of 60s (request timeout left long here).
                     session.setChokeTimingForTest(1000, 1_000_000_000L, 30_000_000_000L);
