@@ -86,6 +86,15 @@ final class DefaultTorrentSession implements TorrentSession {
     private static final int MAX_PENDING_PEERS = 128;
     /** Upper bound on remembered PEX "dropped" hints, so untrusted peers cannot grow the set without bound. */
     private static final int MAX_DROPPED_HINTS = 512;
+    /**
+     * Peer churn, second tier: a peer that has been connected this many rounds and is still delivering less than
+     * {@value #CHURN_LAGGARD_FRACTION_PERCENT}% of the pool median is a long-term laggard and may be recycled even
+     * though it is not fully idle. Deliberately far longer than the idle grace so a healthy swarm is left alone.
+     */
+    private static final int CHURN_LAGGARD_ROUNDS = 10;
+    private static final int CHURN_LAGGARD_FRACTION_PERCENT = 10;
+    /** Upper bound on remembered peer reputations. */
+    private static final int MAX_REPUTATIONS = 1024;
 
     private final InfoHash infoHash;
     private final PeerId peerId;
@@ -116,6 +125,8 @@ final class DefaultTorrentSession implements TorrentSession {
     private final Set<PeerAddress> bannedPeers = ConcurrentHashMap.newKeySet();
     /** Addresses PEX reported as gone: skipped once when the connector would otherwise dial them (BEP 11). */
     private final Set<PeerAddress> droppedHints = ConcurrentHashMap.newKeySet();
+    /** Bytes ever received from an address, accumulated across reconnects: the peer-reputation signal for churn. */
+    private final Map<PeerAddress, Long> peerReputation = new ConcurrentHashMap<>();
 
     private final Object lock = new Object();
     private final Object listenerLock = new Object(); // guards the atomicity of "adding a listener" and "replaying the metadata event"
@@ -807,9 +818,13 @@ final class DefaultTorrentSession implements TorrentSession {
                 return;
             }
             if (fresh != null && !bannedPeers.contains(fresh) && !workers.containsKey(fresh)) {
-                pending.offerLast(fresh);
+                if (peerReputation.getOrDefault(fresh, 0L) > 0) {
+                    pending.offerFirst(fresh); // it fed us before: dial it ahead of unknown candidates
+                } else {
+                    pending.offerLast(fresh);
+                }
                 while (pending.size() > MAX_PENDING_PEERS) {
-                    pending.pollFirst(); // bound the backlog; the oldest candidates are the stalest
+                    pending.pollLast(); // bound the backlog, discarding the least promising tail
                 }
             }
             // Admit as many pending candidates as there is room for, recycling an idle slot when the pool is full.
@@ -856,18 +871,87 @@ final class DefaultTorrentSession implements TorrentSession {
             if (now - worker.connectedAtNanos < graceNanos) {
                 continue; // still within its grace period: give it a chance to prove itself
             }
-            if (worst == null || worker.connectedAtNanos < worst.connectedAtNanos) {
-                worst = worker; // among idle peers, evict the one that has already had the longest chance
+            if (worst == null || preferToEvict(worker, worst)) {
+                worst = worker;
             }
+        }
+        if (worst == null) {
+            worst = findLaggard(now, interval); // nothing fully idle: consider a long-term laggard instead
         }
         if (worst == null) {
             return false;
         }
         lastChurnNanos = now;
         PeerWorker evicted = worst;
-        LOG.log(Level.DEBUG, () -> "recycling idle peer " + evicted.connection.address() + " to admit a fresh peer");
+        LOG.log(Level.DEBUG, () -> "recycling peer " + evicted.connection.address() + " to admit a fresh peer");
         evicted.connection.close(); // onClosed removes it from the pool and re-queues its outstanding blocks
         return true;
+    }
+
+    /**
+     * Between two equally idle peers, drop the one with no history of ever delivering us data; only if both are
+     * equally (un)proven does the one that has had the longest chance lose its slot. Keeping a peer that fed us
+     * well before a reconnect is worth more than its momentary idleness.
+     */
+    private boolean preferToEvict(PeerWorker candidate, PeerWorker current) {
+        boolean candidateProven = peerReputation.getOrDefault(candidate.connection.address(), 0L) > 0;
+        boolean currentProven = peerReputation.getOrDefault(current.connection.address(), 0L) > 0;
+        if (candidateProven != currentProven) {
+            return !candidateProven;
+        }
+        return candidate.connectedAtNanos < current.connectedAtNanos;
+    }
+
+    /**
+     * Second churn tier for a pool where everyone trickles but nobody is idle: pick a peer that has been connected
+     * for {@value #CHURN_LAGGARD_ROUNDS} rounds and still delivers under
+     * {@value #CHURN_LAGGARD_FRACTION_PERCENT}% of the pool median. The long dwell time and the harsh threshold
+     * keep a healthy swarm untouched — only a persistent laggard qualifies. Proven peers are never picked here.
+     */
+    private PeerWorker findLaggard(long now, long interval) {
+        List<Long> rates = new ArrayList<>();
+        for (PeerWorker worker : workers.values()) {
+            if (worker.downloadMode) {
+                rates.add(worker.recentRate);
+            }
+        }
+        if (rates.size() < 4) {
+            return null; // too small a sample for a meaningful median
+        }
+        java.util.Collections.sort(rates);
+        long median = rates.get(rates.size() / 2);
+        if (median <= 0) {
+            return null;
+        }
+        long threshold = median * CHURN_LAGGARD_FRACTION_PERCENT / 100;
+        long dwellNanos = CHURN_LAGGARD_ROUNDS * interval;
+        PeerWorker worst = null;
+        for (PeerWorker worker : workers.values()) {
+            if (!worker.downloadMode || worker.recentRate > threshold) {
+                continue;
+            }
+            if (now - worker.connectedAtNanos < dwellNanos) {
+                continue;
+            }
+            if (peerReputation.getOrDefault(worker.connection.address(), 0L) > 0) {
+                continue; // it has fed us well before; do not trade it for an unknown
+            }
+            if (worst == null || worker.recentRate < worst.recentRate) {
+                worst = worker;
+            }
+        }
+        return worst;
+    }
+
+    /** Remember how much an address has ever given us, so a reconnect can be prioritised and protected. */
+    private void recordReputation(PeerAddress address, long bytesReceived) {
+        if (bytesReceived <= 0) {
+            return;
+        }
+        if (peerReputation.size() >= MAX_REPUTATIONS && !peerReputation.containsKey(address)) {
+            return; // bounded: keep the reputations we already have rather than growing without limit
+        }
+        peerReputation.merge(address, bytesReceived, Long::sum);
     }
 
     /** Called by BtClient's incoming listener: takes over an already-handshaked incoming socket. */
@@ -1043,6 +1127,7 @@ final class DefaultTorrentSession implements TorrentSession {
                 optimisticPeer = null;
             }
             if (downloadMode && picker != null) {
+                recordReputation(conn.address(), bytesFromPeer.get()); // survives the disconnect for future churn decisions
                 abandonOutstanding();
                 picker.onPeerGone(conn.peerBitfield());
                 runChokeRound(false); // reallocate the freed upload slot
