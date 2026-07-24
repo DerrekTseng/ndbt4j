@@ -39,6 +39,7 @@ Status of performance work on bt4j. Effort/Risk: S(mall) / M(edium) / L(arge).
 | Mid-download re-selection | change selected files on a running/seeding torrent (`start()` again / `Bt.changeSelection`) |
 | NAT port mapping | NAT-PMP + UPnP-IGD, opt-in, so a NATed host accepts incoming peers |
 | Web seeds (BEP 19) | download from an HTTP mirror listed in url-list; completes even with zero peers |
+| uTP transport (BEP 29) | LEDBAT-controlled reliable stream over UDP; peers can connect over uTP or TCP (opt-in) |
 
 ## Remaining
 
@@ -54,7 +55,6 @@ blind is as likely to hurt as help, so they need a benchmark before any code lan
 ### Not done — large protocol work
 | # | Item | Effort | Why not yet |
 |---|---|---|---|
-| 12 | uTP transport (BEP 29) | L | A complete reliable transport (congestion control, retransmission, windowing) over UDP — the single biggest remaining protocol gap, and far too large to land safely in one unattended pass. Deserves its own milestone with its own test suite. |
 | 8 | Holepunch / NAT traversal (BEP 55) | L | Requires relayed coordination through connected peers, and cannot be meaningfully verified without a real NATed multi-host setup — local tests would prove nothing. |
 | 13 | IPv6 DHT (BEP 32) | M | Needs a second routing table and `want` negotiation. Self-contained but sizeable; the IPv4 DHT plus BEP 7 compact IPv6 peers already cover the common cases. |
 | 14 | Super-seeding (BEP 16) | M | Seeding-side only: it helps an *initial seeder* distribute a new torrent, and does **nothing** for download speed. Correct implementation needs per-peer piece-advertisement bookkeeping tied to observing swarm propagation. |
