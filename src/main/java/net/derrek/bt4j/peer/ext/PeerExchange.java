@@ -31,6 +31,7 @@ public final class PeerExchange implements Extension {
 
     private final Supplier<Set<PeerAddress>> currentPeers;
     private final Consumer<List<PeerAddress>> onPeersDiscovered;
+    private final Consumer<List<PeerAddress>> onPeersDropped;
 
     private Set<PeerAddress> lastSent = Set.of();
     private long lastSentAtNanos;
@@ -41,8 +42,20 @@ public final class PeerExchange implements Extension {
      * @param onPeersDiscovered new peers learned from the peer's PEX messages
      */
     public PeerExchange(Supplier<Set<PeerAddress>> currentPeers, Consumer<List<PeerAddress>> onPeersDiscovered) {
+        this(currentPeers, onPeersDiscovered, dropped -> {
+        });
+    }
+
+    /**
+     * @param onPeersDropped peers the remote reports as gone from the swarm. Advisory only: the session uses these
+     *                       to avoid dialing a candidate that is no longer there, never to disconnect a live peer
+     *                       (PEX is untrusted input, so a hostile peer must not be able to sever our connections).
+     */
+    public PeerExchange(Supplier<Set<PeerAddress>> currentPeers, Consumer<List<PeerAddress>> onPeersDiscovered,
+                        Consumer<List<PeerAddress>> onPeersDropped) {
         this.currentPeers = currentPeers;
         this.onPeersDiscovered = onPeersDiscovered;
+        this.onPeersDropped = onPeersDropped;
     }
 
     @Override
@@ -84,7 +97,23 @@ public final class PeerExchange implements Extension {
             LOG.log(System.Logger.Level.TRACE, () -> "PEX from " + connection.address() + " added " + discovered.size() + " peers");
             onPeersDiscovered.accept(discovered);
         }
-        // dropped/dropped6 ignored: we do not proactively disconnect because of PEX.
+        List<PeerAddress> gone = new ArrayList<>();
+        if (dict.get("dropped").orElse(null) instanceof BValue.BString(byte[] dropped) && dropped.length % 6 == 0) {
+            try {
+                gone.addAll(PeerAddress.fromCompact(dropped));
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        if (dict.get("dropped6").orElse(null) instanceof BValue.BString(byte[] dropped6) && dropped6.length % 18 == 0) {
+            try {
+                gone.addAll(PeerAddress.fromCompact6(dropped6));
+            } catch (IllegalArgumentException ignored) {
+            }
+        }
+        if (!gone.isEmpty()) {
+            LOG.log(System.Logger.Level.TRACE, () -> "PEX from " + connection.address() + " dropped " + gone.size() + " peers");
+            onPeersDropped.accept(gone); // advisory: suppresses dialing, never disconnects a live peer
+        }
     }
 
     /**

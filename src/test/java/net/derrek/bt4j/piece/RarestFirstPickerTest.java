@@ -30,6 +30,21 @@ class RarestFirstPickerTest {
     }
 
     @Test
+    void endgameDuplicatesAreWithheldFromDisallowedPeers() {
+        Metainfo meta = meta();
+        RarestFirstPicker picker = picker(meta);
+        picker.onPeerBitfield(full(3));
+
+        // dispatch every block so the picker enters endgame (all requested, none received)
+        List<BlockRequest> all = picker.pick(full(3), 1000);
+        assertFalse(all.isEmpty());
+        assertTrue(picker.pick(full(3), 1000, false).isEmpty(),
+                "a peer excluded from endgame duplicates should receive nothing once all blocks are dispatched");
+        assertFalse(picker.pick(full(3), 1000, true).isEmpty(),
+                "an eligible peer should still receive endgame duplicates");
+    }
+
+    @Test
     void picksRarestPieceFirst() {
         Metainfo meta = meta();
         RarestFirstPicker picker = picker(meta);

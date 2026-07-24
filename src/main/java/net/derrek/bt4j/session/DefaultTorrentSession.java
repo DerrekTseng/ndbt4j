@@ -84,6 +84,8 @@ final class DefaultTorrentSession implements TorrentSession {
     private static final int CHURN_GRACE_ROUNDS = 3;
     /** Peer churn: upper bound on the connector's backlog of discovered-but-not-yet-connected peers. */
     private static final int MAX_PENDING_PEERS = 128;
+    /** Upper bound on remembered PEX "dropped" hints, so untrusted peers cannot grow the set without bound. */
+    private static final int MAX_DROPPED_HINTS = 512;
 
     private final InfoHash infoHash;
     private final PeerId peerId;
@@ -112,6 +114,8 @@ final class DefaultTorrentSession implements TorrentSession {
     private final Map<Integer, Set<PeerAddress>> pieceContributors = new ConcurrentHashMap<>();
     private final Map<PeerAddress, Integer> peerStrikes = new ConcurrentHashMap<>();
     private final Set<PeerAddress> bannedPeers = ConcurrentHashMap.newKeySet();
+    /** Addresses PEX reported as gone: skipped once when the connector would otherwise dial them (BEP 11). */
+    private final Set<PeerAddress> droppedHints = ConcurrentHashMap.newKeySet();
 
     private final Object lock = new Object();
     private final Object listenerLock = new Object(); // guards the atomicity of "adding a listener" and "replaying the metadata event"
@@ -742,6 +746,20 @@ final class DefaultTorrentSession implements TorrentSession {
         }
     }
 
+    /**
+     * PEX told us these peers have left the swarm (BEP 11 dropped/dropped6). Purely advisory: it suppresses a
+     * future dial of a candidate we have not connected to yet, and never disconnects an established peer — PEX is
+     * untrusted input, so a hostile peer must not be able to sever our connections. The hint set is bounded.
+     */
+    private void onPeersDropped(List<PeerAddress> peers) {
+        for (PeerAddress peer : peers) {
+            if (workers.containsKey(peer) || droppedHints.size() >= MAX_DROPPED_HINTS) {
+                continue; // never act against a live connection, and never let hints grow without bound
+            }
+            droppedHints.add(peer);
+        }
+    }
+
     private static List<Tracker> buildTrackerList(List<java.net.URI> uris) {
         List<Tracker> trackers = new ArrayList<>();
         for (java.net.URI uri : uris) {
@@ -802,6 +820,9 @@ final class DefaultTorrentSession implements TorrentSession {
                 PeerAddress address = pending.pollFirst();
                 if (bannedPeers.contains(address) || workers.containsKey(address)) {
                     continue;
+                }
+                if (droppedHints.remove(address)) {
+                    continue; // the swarm reported this peer gone (PEX): do not spend a dial on it
                 }
                 PeerWorker worker = new PeerWorker(address);
                 if (workers.putIfAbsent(address, worker) == null) {
@@ -929,7 +950,7 @@ final class DefaultTorrentSession implements TorrentSession {
         PeerWorker(PeerAddress address) {
             Metainfo meta = metainfo;
             this.downloadMode = meta != null;
-            this.pex = pexEnabled() ? new PeerExchange(workers::keySet, DefaultTorrentSession.this::onPeersFound) : null;
+            this.pex = pexEnabled() ? new PeerExchange(workers::keySet, DefaultTorrentSession.this::onPeersFound, DefaultTorrentSession.this::onPeersDropped) : null;
             this.registry = new ExtensionRegistry(extensions(pex));
             this.connection = PeerConnection.outgoing(
                     address, infoHash, peerId, downloadMode ? meta.pieceCount() : 0, dht != null, this);
@@ -938,7 +959,7 @@ final class DefaultTorrentSession implements TorrentSession {
         /** Incoming connection (metadata is always known). */
         PeerWorker(Socket socket, Handshake theirHandshake) {
             this.downloadMode = true;
-            this.pex = pexEnabled() ? new PeerExchange(workers::keySet, DefaultTorrentSession.this::onPeersFound) : null;
+            this.pex = pexEnabled() ? new PeerExchange(workers::keySet, DefaultTorrentSession.this::onPeersFound, DefaultTorrentSession.this::onPeersDropped) : null;
             this.registry = new ExtensionRegistry(extensions(pex));
             this.connection = PeerConnection.incoming(
                     socket, theirHandshake, infoHash, peerId, metainfo.pieceCount(), dht != null, this);
@@ -1041,11 +1062,21 @@ final class DefaultTorrentSession implements TorrentSession {
             if (want <= 0) {
                 return;
             }
-            for (BlockRequest block : picker.pick(connection.peerBitfield(), want)) {
+            for (BlockRequest block : picker.pick(connection.peerBitfield(), want, allowEndgameDuplicates())) {
                 if (outstanding.putIfAbsent(block, System.nanoTime()) == null) {
                     connection.send(new PeerMessage.Request(block.pieceIndex(), block.begin(), block.length()));
                 }
             }
+        }
+
+        /**
+         * Endgame duplicates are only worth sending to peers that actually deliver: a duplicate handed to a peer
+         * contributing nothing just burns tail bandwidth that the duplicate was meant to save. Peers still inside
+         * their initial grace period are unproven rather than bad, so they stay eligible.
+         */
+        private boolean allowEndgameDuplicates() {
+            return recentRate > 0
+                    || System.nanoTime() - connectedAtNanos < CHURN_GRACE_ROUNDS * chokeIntervalMillis * 1_000_000L;
         }
 
         /** Even while choked, we can still request the peer's advertised Allowed Fast pieces (BEP 6). */

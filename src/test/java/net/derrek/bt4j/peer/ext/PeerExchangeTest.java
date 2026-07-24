@@ -47,6 +47,21 @@ class PeerExchangeTest {
     }
 
     @Test
+    void droppedPeersAreReportedSeparatelyFromAdded() {
+        List<PeerAddress> added = List.of(peer("10.0.0.1", 6881));
+        List<PeerAddress> dropped = List.of(peer("10.0.0.9", 6882), peer("172.16.0.3", 6999));
+        byte[] payload = PeerExchange.build(added, dropped);
+
+        ConcurrentLinkedQueue<PeerAddress> discovered = new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<PeerAddress> gone = new ConcurrentLinkedQueue<>();
+        PeerExchange receiver = new PeerExchange(Set::of, discovered::addAll, gone::addAll);
+        receiver.onMessage(dummyConn(), new ExtensionRegistry(List.of(receiver)), payload);
+
+        assertEquals(Set.copyOf(added), Set.copyOf(discovered));
+        assertEquals(Set.copyOf(dropped), Set.copyOf(gone), "dropped/dropped6 entries should be surfaced");
+    }
+
+    @Test
     void buildThenParseRoundTripIpv4() {
         List<PeerAddress> added = List.of(peer("10.0.0.1", 6881), peer("192.168.1.5", 51413));
         byte[] payload = PeerExchange.build(added, List.of());

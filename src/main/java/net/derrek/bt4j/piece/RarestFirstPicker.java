@@ -86,6 +86,16 @@ public final class RarestFirstPicker implements PiecePicker {
 
     @Override
     public synchronized List<BlockRequest> pick(Bitfield peerHas, int maxBlocks) {
+        return pick(peerHas, maxBlocks, true);
+    }
+
+    /**
+     * @param allowEndgameDuplicates whether this peer may receive endgame duplicate requests. Fresh (never yet
+     *                               requested) blocks are always handed out; only the endgame re-request step is
+     *                               gated, so a peer contributing nothing does not soak up the tail bandwidth the
+     *                               duplicates are meant to save.
+     */
+    public synchronized List<BlockRequest> pick(Bitfield peerHas, int maxBlocks, boolean allowEndgameDuplicates) {
         List<BlockRequest> out = new ArrayList<>();
 
         // 1) first fill in pieces already in progress (reduces the number of pieces opened at once)
@@ -123,7 +133,7 @@ public final class RarestFirstPicker implements PiecePicker {
 
         // 3) endgame: once all remaining blocks have been dispatched, re-request blocks not yet delivered (across peers to speed up the tail)
         endgame = isEndgameLocked();
-        if (endgame) {
+        if (endgame && allowEndgameDuplicates) {
             for (Map.Entry<Integer, PieceProgress> entry : active.entrySet()) {
                 int p = entry.getKey();
                 PieceProgress progress = entry.getValue();
