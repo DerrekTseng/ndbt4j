@@ -197,6 +197,29 @@ public final class Bt implements AutoCloseable {
         return task;
     }
 
+    /**
+     * Changes which files a running task downloads. Newly selected files start downloading (a completed, seeding
+     * task returns to downloading); deselected files stop and their partial data is left on disk. The target
+     * directory is unchanged. {@code filesToDownload} must all come from this task's torrent; an empty list means
+     * all files. The {@code .bt4j} sidecar is rewritten to reflect the new selection.
+     *
+     * @throws IllegalArgumentException the files come from a different torrent, or the list is empty
+     */
+    public void changeSelection(TorrentDownloadTask task, List<TorrentContentFile> filesToDownload) {
+        TorrentDownloadTaskImpl impl = (TorrentDownloadTaskImpl) task;
+        TorrentContentImpl content = requireSameTorrent(filesToDownload);
+        if (content != impl.content) {
+            throw new IllegalArgumentException("filesToDownload belong to a different torrent than the task");
+        }
+        Set<Integer> indices = new HashSet<>();
+        for (TorrentContentFile file : filesToDownload) {
+            indices.add(file.index());
+        }
+        impl.session.start(new DownloadPlan(impl.targetDirectory(), indices, impl.seedAfter));
+        persist(impl); // record the new selection in .bt4j immediately
+        LOG.log(Level.DEBUG, () -> "changed selection for " + impl.content.infoHashHex() + " -> " + indices.size() + " files");
+    }
+
     /** Tasks currently downloading. */
     public List<TorrentDownloadTask> getDownloadTaskList() {
         return tasks.values().stream()

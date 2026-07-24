@@ -29,7 +29,11 @@ public interface TorrentSession extends AutoCloseable {
 
     /**
      * Starts downloading according to the plan (METADATA_READY → DOWNLOADING).
-     * Calling again while already downloading is treated as changing the plan (recomputes the required piece set).
+     * <p>
+     * Calling again while DOWNLOADING or SEEDING re-selects which files to download: newly selected files begin
+     * downloading (a completed, seeding torrent flips back to DOWNLOADING), deselected files stop and their
+     * partial data is left on disk. The download directory cannot be changed this way — pass the same
+     * {@code saveTo} or an {@link IllegalArgumentException} is thrown.
      */
     void start(DownloadPlan plan);
 

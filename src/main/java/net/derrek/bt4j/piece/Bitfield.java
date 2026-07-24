@@ -62,6 +62,15 @@ public final class Bitfield {
         }
     }
 
+    /** Clears a single piece bit (used when a mid-download re-selection revokes a completed boundary piece). */
+    public void clear(int pieceIndex) {
+        Objects.checkIndex(pieceIndex, pieceCount);
+        if (get(pieceIndex)) {
+            bits[pieceIndex / 8] &= (byte) ~(1 << (7 - (pieceIndex % 8)));
+            cardinality--;
+        }
+    }
+
     /** Number of pieces set. */
     public int cardinality() {
         return cardinality;

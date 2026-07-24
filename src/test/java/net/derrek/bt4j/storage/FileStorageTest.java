@@ -244,6 +244,36 @@ class FileStorageTest {
     }
 
     @Test
+    void reselectionRevokesCompletedBoundaryPieces(@TempDir Path tmp) throws IOException {
+        // a.bin [0,30000) and b.bin [30000,60000) with 16384-byte pieces: piece 1 straddles both files.
+        byte[] a = TorrentFixtures.randomBytes(30000, 41);
+        byte[] b = TorrentFixtures.randomBytes(30000, 42);
+        byte[] flat = new byte[60000];
+        System.arraycopy(a, 0, flat, 0, 30000);
+        System.arraycopy(b, 0, flat, 30000, 30000);
+        Metainfo meta = TorrentFixtures.multiFile("multi", List.of(
+                new TorrentFixtures.TestFile(List.of("a.bin"), a),
+                new TorrentFixtures.TestFile(List.of("b.bin"), b)), PIECE_LENGTH, "http://t/a");
+
+        try (FileStorage storage = new FileStorage(meta, PieceSelection.of(meta, Set.of(0)), tmp)) {
+            // download a.bin's pieces (0 fully inside a.bin, 1 the boundary piece)
+            for (int p = 0; p <= 1; p++) {
+                int start = p * PIECE_LENGTH;
+                storage.write(p, 0, Arrays.copyOfRange(flat, start, start + meta.pieceLengthAt(p)));
+                assertTrue(storage.verifyPiece(p));
+            }
+            assertTrue(storage.completedPieces().get(1), "boundary piece completes with a.bin selected");
+
+            // expand the selection to include b.bin: the boundary piece is now missing b.bin's bytes
+            var invalidated = storage.updateSelection(PieceSelection.of(meta, Set.of()));
+            assertTrue(invalidated.contains(1), "boundary piece must be revoked for re-download");
+            assertFalse(invalidated.contains(0), "a piece entirely inside a.bin needs no refetch");
+            assertFalse(storage.completedPieces().get(1), "revoked piece is no longer complete");
+            assertTrue(storage.completedPieces().get(0), "the fully-owned piece stays complete");
+        }
+    }
+
+    @Test
     void flushIsSafeAndIdempotent(@TempDir Path tmp) throws IOException {
         byte[] content = TorrentFixtures.randomBytes(20000, 57);
         Metainfo meta = TorrentFixtures.singleFile("f.bin", content, PIECE_LENGTH, "http://t/a");

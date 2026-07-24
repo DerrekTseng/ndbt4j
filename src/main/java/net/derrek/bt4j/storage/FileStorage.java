@@ -35,7 +35,7 @@ public final class FileStorage implements Storage {
     private static final System.Logger LOG = System.getLogger(FileStorage.class.getName());
 
     private final Metainfo metainfo;
-    private final PieceSelection selection;
+    private volatile PieceSelection selection; // swappable: the user can re-select files mid-download
     private final Path root;
     private final Map<Integer, byte[]> pieceBuffers = new HashMap<>();
     /** Which blocks of each buffered piece have arrived, so in-flight progress survives a restart. */
@@ -117,10 +117,36 @@ public final class FileStorage implements Storage {
         return partialProgress();
     }
 
+    /**
+     * Applies a new file selection to a running download. Returns the pieces that must be re-downloaded: a
+     * completed boundary piece keeps only its previously-wanted bytes on disk, so if the new selection wants
+     * more of that piece (a file that shares it just became wanted), those bytes are missing and the piece is
+     * marked incomplete. Buffers of pieces that are no longer wanted at all are dropped to free memory.
+     *
+     * @return the piece indices whose completion was revoked (the caller must revoke them in the picker too)
+     */
+    public synchronized List<Integer> updateSelection(PieceSelection newSelection) {
+        PieceSelection old = selection;
+        List<Integer> invalidated = new ArrayList<>();
+        for (int p = 0; p < metainfo.pieceCount(); p++) {
+            if (completed.get(p) && newSelection.wantedBytesInPiece(p) > old.wantedBytesInPiece(p)) {
+                // a newly-wanted file shares this piece, but its bytes were discarded when the piece was written
+                completed.clear(p);
+                readCache.remove(p);
+                invalidated.add(p);
+            }
+        }
+        // Free the buffers of pieces that are no longer wanted by anyone.
+        pieceBuffers.keySet().removeIf(p -> newSelection.wantedBytesInPiece(p) == 0);
+        partialBlocks.keySet().removeIf(p -> newSelection.wantedBytesInPiece(p) == 0);
+        this.selection = newSelection;
+        return invalidated;
+    }
+
     @Override
     public synchronized void write(int pieceIndex, int offset, byte[] data) {
-        if (closed || completed.get(pieceIndex)) {
-            return;
+        if (closed || completed.get(pieceIndex) || selection.wantedBytesInPiece(pieceIndex) == 0) {
+            return; // dropped, already done, or no longer wanted after a mid-download re-selection
         }
         byte[] buffer = pieceBuffers.computeIfAbsent(pieceIndex, p -> new byte[metainfo.pieceLengthAt(p)]);
         System.arraycopy(data, 0, buffer, offset, data.length);

@@ -36,6 +36,7 @@ Status of performance work on bt4j. Effort/Risk: S(mall) / M(edium) / L(arge).
 | Cancellable rate-limiter waits | 100ms slices + closed-connection probe |
 | Upload queue with Cancel | serving moved off the read loop; Cancel drops queued work (P2 #11) |
 | Sequential (streaming) mode | opt-in file-order picking for preview/playback (P3 #17) |
+| Mid-download re-selection | change selected files on a running/seeding torrent (`start()` again / `Bt.changeSelection`) |
 
 ## Remaining
 

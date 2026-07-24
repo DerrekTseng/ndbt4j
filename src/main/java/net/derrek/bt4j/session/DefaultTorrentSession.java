@@ -322,39 +322,100 @@ final class DefaultTorrentSession implements TorrentSession {
     public void start(DownloadPlan plan) {
         boolean complete;
         synchronized (lock) {
-            if (state != SessionState.METADATA_READY) {
-                throw new IllegalStateException("cannot start in current state " + state + " (changing the plan will be supported later)");
-            }
-            this.plan = plan;
-            this.selection = PieceSelection.of(metainfo, plan.selectedFileIndices());
-            this.storage = new FileStorage(metainfo, selection, plan.saveTo());
-            // Scan the target directory to recover an existing partial download (a no-op for a fresh download; .bt4j resume goes through restore and does not take this path)
-            try {
-                storage.recheck();
-            } catch (IOException e) {
-                LOG.log(Level.WARNING, "recheck existing files failed, treating as fresh download", e);
-            }
-            this.picker = new RarestFirstPicker(metainfo, selection, storage.completedPieces());
-            this.picker.setSequential(plan.sequential());
-            recomputeVerifiedBytes();
-            setState(SessionState.DOWNLOADING);
-            LOG.log(Level.DEBUG, () -> "start download " + metainfo.name() + " -> " + plan.saveTo()
-                    + " (selected " + (plan.selectedFileIndices().isEmpty() ? "all" : plan.selectedFileIndices().size())
-                    + " files, " + selection.wantedPieceCount() + " pieces)");
-            complete = picker.isComplete();
-            if (complete) {
-                completeDownloadLocked(false); // the target directory already holds the complete data
-            } else {
-                launchNetworking();
-            }
+            complete = switch (state) {
+                case METADATA_READY -> initialStart(plan);
+                // The interface documents a second start() as a plan change (re-select which files to download).
+                case DOWNLOADING, SEEDING -> reselect(plan);
+                default -> throw new IllegalStateException("cannot start or re-select in state " + state);
+            };
         }
         if (complete) {
             fireDownloadCompleted();
         }
-        // Magnet-link scenario: re-enqueue the peers already known from the metadata stage
-        for (PeerAddress peer : knownPeers) {
-            peerQueue.offer(peer);
+        // Re-enqueue the peers already known (from the metadata stage, or from before a seeding→downloading flip)
+        if (state == SessionState.DOWNLOADING) {
+            for (PeerAddress peer : knownPeers) {
+                peerQueue.offer(peer);
+            }
         }
+    }
+
+    /** First start from METADATA_READY. Returns whether the target directory already held the complete data. */
+    private boolean initialStart(DownloadPlan plan) {
+        this.plan = plan;
+        this.selection = PieceSelection.of(metainfo, plan.selectedFileIndices());
+        this.storage = new FileStorage(metainfo, selection, plan.saveTo());
+        // Scan the target directory to recover an existing partial download (a no-op for a fresh download; .bt4j resume goes through restore and does not take this path)
+        try {
+            storage.recheck();
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "recheck existing files failed, treating as fresh download", e);
+        }
+        this.picker = new RarestFirstPicker(metainfo, selection, storage.completedPieces());
+        this.picker.setSequential(plan.sequential());
+        recomputeVerifiedBytes();
+        setState(SessionState.DOWNLOADING);
+        LOG.log(Level.DEBUG, () -> "start download " + metainfo.name() + " -> " + plan.saveTo()
+                + " (selected " + (plan.selectedFileIndices().isEmpty() ? "all" : plan.selectedFileIndices().size())
+                + " files, " + selection.wantedPieceCount() + " pieces)");
+        boolean complete = picker.isComplete();
+        if (complete) {
+            completeDownloadLocked(false); // the target directory already holds the complete data
+        } else {
+            launchNetworking();
+        }
+        return complete;
+    }
+
+    /**
+     * Applies a new file selection to a running (DOWNLOADING or SEEDING) torrent. Newly wanted files start
+     * downloading — a completed torrent flips back from SEEDING to DOWNLOADING and relaunches its connector — and
+     * files that are no longer wanted stop, their in-flight requests abandoned. The download directory cannot be
+     * changed this way (it would mean moving files); pass the same saveTo. Returns whether this change completed
+     * the (possibly reduced) selection.
+     */
+    private boolean reselect(DownloadPlan newPlan) {
+        if (!java.util.Objects.equals(newPlan.saveTo(), plan.saveTo())) {
+            throw new IllegalArgumentException("cannot change the download directory of a running torrent");
+        }
+        PieceSelection updated = PieceSelection.of(metainfo, newPlan.selectedFileIndices());
+        List<Integer> invalidated = storage.updateSelection(updated); // completed boundary pieces missing new bytes
+        this.selection = updated;
+        this.plan = newPlan;
+        picker.updateSelection(updated, invalidated);
+        picker.setSequential(newPlan.sequential());
+        recomputeVerifiedBytes();
+        // Abandon any outstanding requests for pieces that are no longer wanted, freeing pipeline slots.
+        for (PeerWorker worker : workers.values()) {
+            worker.outstanding.keySet().removeIf(b -> selection.wantedBytesInPiece(b.pieceIndex()) == 0);
+        }
+        LOG.log(Level.DEBUG, () -> "re-selected files for " + metainfo.name() + ": "
+                + (newPlan.selectedFileIndices().isEmpty() ? "all" : newPlan.selectedFileIndices().size())
+                + " files, " + updated.wantedPieceCount() + " pieces, " + invalidated.size() + " boundary pieces to refetch");
+
+        if (picker.isComplete()) {
+            if (state == SessionState.DOWNLOADING) {
+                completeDownloadLocked(true);
+                return true;
+            }
+            return false; // already seeding and still complete
+        }
+        // There is (again) work to do.
+        if (state == SessionState.SEEDING) {
+            setState(SessionState.DOWNLOADING);
+            if (connectorThread == null) {
+                this.connectorThread = Thread.ofVirtual()
+                        .name("bt4j-connect-" + infoHash.hex()).start(this::connectorLoop);
+            }
+        }
+        // Peers connected while we were complete never heard our interest; express it now, then request.
+        for (PeerWorker worker : workers.values()) {
+            if (worker.downloadMode && !worker.connection.amInterested()) {
+                worker.connection.send(new PeerMessage.Interested());
+            }
+        }
+        topUpPipelines(List.of());
+        return false;
     }
 
     /** Recomputes verifiedWantedBytes from the completed pieces. */

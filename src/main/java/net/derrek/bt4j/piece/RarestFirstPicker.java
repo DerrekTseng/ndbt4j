@@ -20,7 +20,7 @@ public final class RarestFirstPicker implements PiecePicker {
     static final int MAX_ACTIVE_PIECES = 32;
 
     private final Metainfo metainfo;
-    private final PieceSelection selection;
+    private PieceSelection selection; // swappable under the monitor: the user can re-select files mid-download
     private final int[] availability;
     private final BitSet verified;
     private final Map<Integer, PieceProgress> active = new java.util.TreeMap<>(); // ordered: streaming mode fills in-progress pieces in file order too
@@ -41,6 +41,23 @@ public final class RarestFirstPicker implements PiecePicker {
      */
     public synchronized void setSequential(boolean sequential) {
         this.sequential = sequential;
+    }
+
+    /**
+     * Applies a new file selection to a running download. Pieces whose completion was revoked by storage (a
+     * boundary piece missing newly-wanted bytes) are marked unverified so they are requested again; pieces that
+     * are no longer wanted at all are dropped from the in-progress set.
+     *
+     * @param invalidated pieces whose completion storage revoked (see {@code FileStorage.updateSelection})
+     */
+    public synchronized void updateSelection(PieceSelection newSelection, java.util.Collection<Integer> invalidated) {
+        this.selection = newSelection;
+        for (int piece : invalidated) {
+            verified.clear(piece);
+            active.remove(piece);
+        }
+        active.keySet().removeIf(piece -> !newSelection.isWanted(piece));
+        endgame = false; // the wanted set changed; recompute on the next pick
     }
 
     /** Block state of a piece in progress. */
