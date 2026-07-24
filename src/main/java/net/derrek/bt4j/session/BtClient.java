@@ -40,6 +40,7 @@ public final class BtClient implements AutoCloseable {
     private final int maxPeersPerTorrent;
     private final DhtClient dht; // null = disabled
     private final net.derrek.bt4j.lsd.LocalServiceDiscovery lsd; // null = disabled or unavailable
+    private final net.derrek.bt4j.nat.PortMapper portMapper; // null = disabled
     private final net.derrek.bt4j.util.RateLimiter downloadLimiter;
     private final net.derrek.bt4j.util.RateLimiter uploadLimiter;
     private final Map<InfoHash, TorrentSession> sessions = new ConcurrentHashMap<>();
@@ -86,6 +87,10 @@ public final class BtClient implements AutoCloseable {
             }
         }
         this.lsd = discovery;
+        // Ask the home gateway to forward the listen port (NAT-PMP then UPnP), so peers on the internet can reach a
+        // host behind NAT. Only meaningful when we actually accept incoming connections, and best-effort throughout.
+        this.portMapper = (builder.portMappingEnabled && listenSocket != null)
+                ? net.derrek.bt4j.nat.PortMapper.start(listenPort) : null;
         if (listenSocket != null) {
             Thread.ofVirtual().name("bt4j-accept").start(this::acceptLoop);
             LOG.log(Level.DEBUG, () -> "accepting incoming peers on TCP port " + listenPort);
@@ -94,6 +99,14 @@ public final class BtClient implements AutoCloseable {
 
     public static Builder builder() {
         return new Builder();
+    }
+
+    /**
+     * The gateway's public IP address, if NAT port mapping is enabled and a mapping has been established.
+     * Empty when port mapping is disabled, no gateway was found, or the mapping is not yet up.
+     */
+    public java.util.Optional<java.net.InetAddress> externalAddress() {
+        return portMapper == null ? java.util.Optional.empty() : portMapper.externalAddress();
     }
 
     /** The actual bound TCP listen port (system-assigned when the builder is passed 0). */
@@ -216,6 +229,9 @@ public final class BtClient implements AutoCloseable {
         if (lsd != null) {
             lsd.close();
         }
+        if (portMapper != null) {
+            portMapper.close(); // remove the gateway mapping we created
+        }
     }
 
     public static final class Builder {
@@ -223,6 +239,7 @@ public final class BtClient implements AutoCloseable {
         private int listenPort = 6881;
         private boolean dhtEnabled = true;
         private boolean lsdEnabled = false;
+        private boolean portMappingEnabled = false;
         private int maxPeersPerTorrent = 30;
         private long downloadRateLimit = -1; // default unlimited (<=0 = unlimited)
         private long uploadRateLimit = -1;   // default unlimited (0 = no uploading, <0 = unlimited)
@@ -257,6 +274,18 @@ public final class BtClient implements AutoCloseable {
          */
         public Builder lsdEnabled(boolean enabled) {
             this.lsdEnabled = enabled;
+            return this;
+        }
+
+        /**
+         * Enables automatic NAT port mapping (NAT-PMP with a UPnP-IGD fallback): asks the home gateway to forward
+         * the listen port so peers on the internet can open incoming connections to a host behind NAT. Disabled by
+         * default because it changes router state and talks to the local gateway; enable it on a NATed server that
+         * needs inbound reachability. Best-effort — a gateway that is absent or refuses simply leaves the port
+         * unmapped, and the mapping is removed on {@link BtClient#close()}.
+         */
+        public Builder portMappingEnabled(boolean enabled) {
+            this.portMappingEnabled = enabled;
             return this;
         }
 
