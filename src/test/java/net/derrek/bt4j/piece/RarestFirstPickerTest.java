@@ -30,6 +30,29 @@ class RarestFirstPickerTest {
     }
 
     @Test
+    void sequentialModePicksInFileOrderRegardlessOfRarity() {
+        Metainfo meta = meta();
+        RarestFirstPicker picker = picker(meta);
+        // make piece 0 the most common and piece 2 the rarest: rarest-first would start at piece 2
+        picker.onPeerBitfield(full(3));
+        Bitfield onlyEarly = new Bitfield(3);
+        onlyEarly.set(0);
+        onlyEarly.set(1);
+        picker.onPeerBitfield(onlyEarly);
+        picker.onPeerBitfield(onlyEarly);
+
+        RarestFirstPicker rarest = picker(meta);
+        rarest.onPeerBitfield(full(3));
+        rarest.onPeerBitfield(onlyEarly);
+        rarest.onPeerBitfield(onlyEarly);
+        assertEquals(2, rarest.pick(full(3), 1).getFirst().pieceIndex(), "rarest-first should start at the rare piece");
+
+        picker.setSequential(true);
+        assertEquals(0, picker.pick(full(3), 1).getFirst().pieceIndex(),
+                "sequential mode should start at the first piece, ignoring rarity");
+    }
+
+    @Test
     void endgameDuplicatesAreWithheldFromDisallowedPeers() {
         Metainfo meta = meta();
         RarestFirstPicker picker = picker(meta);

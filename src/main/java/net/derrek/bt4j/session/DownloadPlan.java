@@ -9,10 +9,20 @@ import java.util.Set;
  * @param saveTo              the download root directory
  * @param selectedFileIndices the selected file indices (FileEntry.index); an empty set means download everything
  * @param seedAfterComplete   whether to seed after completion (default true; the user can still stopSeeding at any time)
+ * @param sequential          request pieces in file order instead of rarest-first, so the beginning of the
+ *                            content becomes usable before the download finishes (playing media while it
+ *                            downloads). This trades swarm health and typically some speed for early
+ *                            availability — leave it off unless you actually need to read ahead of completion.
  */
 public record DownloadPlan(Path saveTo,
                            Set<Integer> selectedFileIndices,
-                           boolean seedAfterComplete) {
+                           boolean seedAfterComplete,
+                           boolean sequential) {
+
+    /** Rarest-first (the default and fastest strategy). */
+    public DownloadPlan(Path saveTo, Set<Integer> selectedFileIndices, boolean seedAfterComplete) {
+        this(saveTo, selectedFileIndices, seedAfterComplete, false);
+    }
 
     /** Download all files and seed after completion. */
     public static DownloadPlan allFiles(Path saveTo) {
@@ -21,5 +31,10 @@ public record DownloadPlan(Path saveTo,
 
     public static DownloadPlan files(Path saveTo, Set<Integer> selectedFileIndices) {
         return new DownloadPlan(saveTo, Set.copyOf(selectedFileIndices), true);
+    }
+
+    /** Same as this plan but requesting pieces in order, for streaming/preview use cases. */
+    public DownloadPlan sequentially() {
+        return new DownloadPlan(saveTo, selectedFileIndices, seedAfterComplete, true);
     }
 }

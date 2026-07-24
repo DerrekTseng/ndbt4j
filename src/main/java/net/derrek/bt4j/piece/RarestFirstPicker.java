@@ -23,7 +23,7 @@ public final class RarestFirstPicker implements PiecePicker {
     private final PieceSelection selection;
     private final int[] availability;
     private final BitSet verified;
-    private final Map<Integer, PieceProgress> active = new HashMap<>();
+    private final Map<Integer, PieceProgress> active = new java.util.TreeMap<>(); // ordered: streaming mode fills in-progress pieces in file order too
 
     /**
      * Lock-free snapshot of the endgame state, refreshed inside {@link #pick} (where the authoritative check
@@ -31,6 +31,17 @@ public final class RarestFirstPicker implements PiecePicker {
      * May lag the true state slightly; a stale read only adds or skips a harmless duplicate-cancel scan.
      */
     private volatile boolean endgame;
+
+    /** Streaming mode: open pieces in file order rather than rarest-first (see {@code DownloadPlan.sequential}). */
+    private boolean sequential;
+
+    /**
+     * Switches piece selection to file order. Deliberately not the default: rarest-first is what keeps a swarm
+     * healthy and a download fast, and sequential order gives that up in exchange for early availability.
+     */
+    public synchronized void setSequential(boolean sequential) {
+        this.sequential = sequential;
+    }
 
     /** Block state of a piece in progress. */
     private static final class PieceProgress {
@@ -131,13 +142,16 @@ public final class RarestFirstPicker implements PiecePicker {
             }
         }
 
-        // 2) open new pieces: the rarest first
+        // 2) open new pieces: the rarest first (or the earliest, in sequential mode)
         while (out.size() < maxBlocks && active.size() < MAX_ACTIVE_PIECES) {
             int best = -1;
             for (int p = 0; p < availability.length; p++) {
                 if (selection.isWanted(p) && !verified.get(p) && !active.containsKey(p) && peerHas.get(p)
                         && (best < 0 || availability[p] < availability[best])) {
                     best = p;
+                    if (sequential) {
+                        break; // streaming mode: take the earliest available piece, ignoring rarity
+                    }
                 }
             }
             if (best < 0) {

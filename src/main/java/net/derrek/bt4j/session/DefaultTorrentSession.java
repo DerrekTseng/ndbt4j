@@ -335,6 +335,7 @@ final class DefaultTorrentSession implements TorrentSession {
                 LOG.log(Level.WARNING, "recheck existing files failed, treating as fresh download", e);
             }
             this.picker = new RarestFirstPicker(metainfo, selection, storage.completedPieces());
+            this.picker.setSequential(plan.sequential());
             recomputeVerifiedBytes();
             setState(SessionState.DOWNLOADING);
             LOG.log(Level.DEBUG, () -> "start download " + metainfo.name() + " -> " + plan.saveTo()
