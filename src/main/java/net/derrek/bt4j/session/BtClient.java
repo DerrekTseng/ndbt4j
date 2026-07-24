@@ -41,6 +41,9 @@ public final class BtClient implements AutoCloseable {
     private final DhtClient dht; // null = disabled
     private final net.derrek.bt4j.lsd.LocalServiceDiscovery lsd; // null = disabled or unavailable
     private final net.derrek.bt4j.nat.PortMapper portMapper; // null = disabled
+    private final net.derrek.bt4j.net.UdpMux udpMux; // null unless uTP shares the UDP port with DHT
+    private final net.derrek.bt4j.utp.UtpEndpoint utpEndpoint; // null = uTP disabled
+    private final net.derrek.bt4j.peer.PeerConnector peerConnector; // how outgoing peer connections are dialed
     private final net.derrek.bt4j.util.RateLimiter downloadLimiter;
     private final net.derrek.bt4j.util.RateLimiter uploadLimiter;
     private final Map<InfoHash, TorrentSession> sessions = new ConcurrentHashMap<>();
@@ -70,12 +73,44 @@ public final class BtClient implements AutoCloseable {
                 builder.downloadRateLimit <= 0 ? -1 : builder.downloadRateLimit);
         // Upload: 0 = blocked (no uploading), <0 = unlimited, >0 = rate-limited
         this.uploadLimiter = new net.derrek.bt4j.util.RateLimiter(builder.uploadRateLimit);
-        if (builder.dhtEnabled) {
-            DhtClient client = new DhtClient(listenPort, builder.dhtBootstrapNodes);
-            client.start();
-            this.dht = client;
-        } else {
-            this.dht = null;
+        // uTP shares the UDP listen port with DHT via a demultiplexer, so peers reach both on the advertised port.
+        net.derrek.bt4j.net.UdpMux mux = null;
+        net.derrek.bt4j.utp.UtpEndpoint utp = null;
+        DhtClient dhtClient = null;
+        if (builder.utpEnabled && listenSocket != null) {
+            try {
+                java.net.DatagramSocket udp = new java.net.DatagramSocket(listenPort);
+                mux = new net.derrek.bt4j.net.UdpMux(udp);
+                utp = new net.derrek.bt4j.utp.UtpEndpoint(mux::send, listenPort);
+                mux.setUtpHandler(utp::onDatagram);
+                if (builder.dhtEnabled) {
+                    net.derrek.bt4j.net.UdpMux m = mux;
+                    dhtClient = new DhtClient(listenPort, builder.dhtBootstrapNodes,
+                            (data, to) -> m.send(to, data));
+                    mux.setDhtHandler(dhtClient::onDatagram);
+                    dhtClient.start();
+                }
+            } catch (IOException e) {
+                LOG.log(Level.WARNING, "could not bind uTP UDP port " + listenPort + ", uTP disabled", e);
+                if (mux != null) {
+                    mux.close();
+                }
+                mux = null;
+                utp = null;
+                dhtClient = null;
+            }
+        }
+        if (dhtClient == null && builder.dhtEnabled) {
+            dhtClient = new DhtClient(listenPort, builder.dhtBootstrapNodes); // standalone: DHT owns its own socket
+            dhtClient.start();
+        }
+        this.dht = dhtClient;
+        this.udpMux = mux;
+        this.utpEndpoint = utp;
+        this.peerConnector = buildConnector(utp);
+        if (utp != null) {
+            net.derrek.bt4j.utp.UtpEndpoint accepting = utp;
+            Thread.ofVirtual().name("bt4j-utp-accept").start(() -> utpAcceptLoop(accepting));
         }
         // Local Service Discovery is fail-soft: without multicast (restricted container, firewall) it simply stays off.
         net.derrek.bt4j.lsd.LocalServiceDiscovery discovery = null;
@@ -166,7 +201,89 @@ public final class BtClient implements AutoCloseable {
 
     private DefaultTorrentSession.Runtime runtime() {
         return new DefaultTorrentSession.Runtime(
-                peerId, listenPort, maxPeersPerTorrent, dht, lsd, downloadLimiter, uploadLimiter);
+                peerId, listenPort, maxPeersPerTorrent, dht, lsd, downloadLimiter, uploadLimiter, peerConnector);
+    }
+
+    /**
+     * Outgoing-connection dialer. Without uTP it is plain TCP. With uTP it races a TCP and a uTP connect and uses
+     * whichever completes first (closing the loser), so a uTP-capable peer is reached over uTP without penalising
+     * the connect time to TCP-only peers.
+     */
+    private net.derrek.bt4j.peer.PeerConnector buildConnector(net.derrek.bt4j.utp.UtpEndpoint utp) {
+        if (utp == null) {
+            return net.derrek.bt4j.peer.TcpTransport::connect;
+        }
+        return address -> {
+            java.util.concurrent.CompletableFuture<net.derrek.bt4j.peer.PeerTransport> winner = new java.util.concurrent.CompletableFuture<>();
+            java.util.concurrent.atomic.AtomicInteger failures = new java.util.concurrent.atomic.AtomicInteger();
+            Runnable tcp = attempt(() -> net.derrek.bt4j.peer.TcpTransport.connect(address), winner, failures);
+            Runnable utpDial = attempt(() -> net.derrek.bt4j.peer.UtpTransport.connect(utp, address), winner, failures);
+            Thread.ofVirtual().name("bt4j-dial-tcp-" + address).start(tcp);
+            Thread.ofVirtual().name("bt4j-dial-utp-" + address).start(utpDial);
+            try {
+                return winner.get(12, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (Exception e) {
+                throw new IOException("both TCP and uTP dials failed to " + address, e);
+            }
+        };
+    }
+
+    /** Runs one dial; the first success completes {@code winner}, later successes are closed, and the second failure fails it. */
+    private static Runnable attempt(DialAction dial, java.util.concurrent.CompletableFuture<net.derrek.bt4j.peer.PeerTransport> winner,
+                                    java.util.concurrent.atomic.AtomicInteger failures) {
+        return () -> {
+            try {
+                net.derrek.bt4j.peer.PeerTransport t = dial.connect();
+                if (!winner.complete(t)) {
+                    t.close(); // lost the race
+                }
+            } catch (Exception e) {
+                if (failures.incrementAndGet() == 2) {
+                    winner.completeExceptionally(e);
+                }
+            }
+        };
+    }
+
+    @FunctionalInterface
+    private interface DialAction {
+        net.derrek.bt4j.peer.PeerTransport connect() throws IOException;
+    }
+
+    /** Accepts inbound uTP connections, reads their handshake, and routes them to the matching session by info-hash. */
+    private void utpAcceptLoop(net.derrek.bt4j.utp.UtpEndpoint utp) {
+        while (!closed) {
+            net.derrek.bt4j.utp.UtpSocket sock;
+            try {
+                sock = utp.accept();
+            } catch (InterruptedException e) {
+                return;
+            }
+            if (sock == null) {
+                return;
+            }
+            Thread.ofVirtual().name("bt4j-utp-incoming").start(() -> routeIncomingUtp(sock));
+        }
+    }
+
+    private void routeIncomingUtp(net.derrek.bt4j.utp.UtpSocket sock) {
+        net.derrek.bt4j.peer.UtpTransport transport = new net.derrek.bt4j.peer.UtpTransport(sock);
+        try {
+            byte[] raw = sock.getInputStream().readNBytes(Handshake.LENGTH);
+            if (raw.length != Handshake.LENGTH) {
+                transport.close();
+                return;
+            }
+            Handshake theirs = Handshake.decode(raw);
+            TorrentSession session = sessions.get(theirs.infoHash());
+            if (session instanceof DefaultTorrentSession dts) {
+                dts.acceptIncoming(new net.derrek.bt4j.peer.PeerAddress(sock.remote()), transport, theirs);
+            } else {
+                transport.close();
+            }
+        } catch (IOException | RuntimeException e) {
+            transport.close();
+        }
     }
 
     /** Adds a .torrent file (state goes directly to METADATA_READY). */
@@ -232,6 +349,12 @@ public final class BtClient implements AutoCloseable {
         if (portMapper != null) {
             portMapper.close(); // remove the gateway mapping we created
         }
+        if (utpEndpoint != null) {
+            utpEndpoint.close();
+        }
+        if (udpMux != null) {
+            udpMux.close(); // owns the shared UDP socket
+        }
     }
 
     public static final class Builder {
@@ -240,6 +363,7 @@ public final class BtClient implements AutoCloseable {
         private boolean dhtEnabled = true;
         private boolean lsdEnabled = false;
         private boolean portMappingEnabled = false;
+        private boolean utpEnabled = false;
         private int maxPeersPerTorrent = 30;
         private long downloadRateLimit = -1; // default unlimited (<=0 = unlimited)
         private long uploadRateLimit = -1;   // default unlimited (0 = no uploading, <0 = unlimited)
@@ -286,6 +410,16 @@ public final class BtClient implements AutoCloseable {
          */
         public Builder portMappingEnabled(boolean enabled) {
             this.portMappingEnabled = enabled;
+            return this;
+        }
+
+        /**
+         * Enables the uTP transport (BEP 29) for peer connections in addition to TCP. Disabled by default. When on,
+         * uTP shares the UDP listen port with DHT (demultiplexed by packet type), incoming uTP connections are
+         * accepted, and outgoing connections race TCP and uTP. Requires a bound listen port.
+         */
+        public Builder utpEnabled(boolean enabled) {
+            this.utpEnabled = enabled;
             return this;
         }
 

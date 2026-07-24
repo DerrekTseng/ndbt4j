@@ -109,6 +109,7 @@ final class DefaultTorrentSession implements TorrentSession {
     private final int maxPeers;
     private final DhtClient dht; // null = disabled
     private final net.derrek.bt4j.lsd.LocalServiceDiscovery lsd; // null = disabled or unavailable
+    private final net.derrek.bt4j.peer.PeerConnector peerConnector;
     private final net.derrek.bt4j.util.RateLimiter downloadLimiter;
     private final net.derrek.bt4j.util.RateLimiter uploadLimiter;
     private final List<java.net.URI> magnetTrackers;
@@ -175,7 +176,8 @@ final class DefaultTorrentSession implements TorrentSession {
     record Runtime(PeerId peerId, int listenPort, int maxPeers, DhtClient dht,
                    net.derrek.bt4j.lsd.LocalServiceDiscovery lsd,
                    net.derrek.bt4j.util.RateLimiter downloadLimiter,
-                   net.derrek.bt4j.util.RateLimiter uploadLimiter) {
+                   net.derrek.bt4j.util.RateLimiter uploadLimiter,
+                   net.derrek.bt4j.peer.PeerConnector peerConnector) {
     }
 
     /** .torrent source. */
@@ -187,6 +189,7 @@ final class DefaultTorrentSession implements TorrentSession {
         this.maxPeers = runtime.maxPeers();
         this.dht = runtime.dht();
         this.lsd = runtime.lsd();
+        this.peerConnector = runtime.peerConnector();
         this.downloadLimiter = runtime.downloadLimiter();
         this.uploadLimiter = runtime.uploadLimiter();
         this.magnetTrackers = List.of();
@@ -203,6 +206,7 @@ final class DefaultTorrentSession implements TorrentSession {
         this.maxPeers = runtime.maxPeers();
         this.dht = runtime.dht();
         this.lsd = runtime.lsd();
+        this.peerConnector = runtime.peerConnector();
         this.downloadLimiter = runtime.downloadLimiter();
         this.uploadLimiter = runtime.uploadLimiter();
         this.magnetTrackers = magnet.trackers();
@@ -1171,26 +1175,30 @@ final class DefaultTorrentSession implements TorrentSession {
 
     /** Called by BtClient's incoming listener: takes over an already-handshaked incoming socket. */
     void acceptIncoming(Socket socket, Handshake theirHandshake) {
-        if ((state != SessionState.DOWNLOADING && state != SessionState.SEEDING) || storage == null) {
-            closeQuietly(socket);
-            return;
-        }
-        if (workers.size() >= maxPeers) {
-            closeQuietly(socket);
-            return;
-        }
         InetSocketAddress remote = (InetSocketAddress) socket.getRemoteSocketAddress();
-        PeerAddress address = new PeerAddress(remote);
-        if (bannedPeers.contains(address)) {
+        net.derrek.bt4j.peer.PeerTransport transport;
+        try {
+            transport = net.derrek.bt4j.peer.TcpTransport.accepted(socket);
+        } catch (IOException e) {
             closeQuietly(socket);
             return;
         }
-        PeerWorker worker = new PeerWorker(socket, theirHandshake);
+        acceptIncoming(new PeerAddress(remote), transport, theirHandshake);
+    }
+
+    /** Accepts an incoming peer over any transport (TCP or uTP); the handshake has already been read and verified. */
+    void acceptIncoming(PeerAddress address, net.derrek.bt4j.peer.PeerTransport transport, Handshake theirHandshake) {
+        if ((state != SessionState.DOWNLOADING && state != SessionState.SEEDING) || storage == null
+                || workers.size() >= maxPeers || bannedPeers.contains(address)) {
+            transport.close();
+            return;
+        }
+        PeerWorker worker = new PeerWorker(address, transport, theirHandshake);
         if (workers.putIfAbsent(address, worker) == null) {
             LOG.log(Level.DEBUG, () -> "accepted incoming peer: " + address);
             worker.connection.start();
         } else {
-            closeQuietly(socket);
+            transport.close();
         }
     }
 
@@ -1255,16 +1263,16 @@ final class DefaultTorrentSession implements TorrentSession {
             this.pex = pexEnabled() ? new PeerExchange(workers::keySet, DefaultTorrentSession.this::onPeersFound, DefaultTorrentSession.this::onPeersDropped) : null;
             this.registry = new ExtensionRegistry(extensions(pex));
             this.connection = PeerConnection.outgoing(
-                    address, infoHash, peerId, downloadMode ? meta.pieceCount() : 0, dht != null, this);
+                    address, infoHash, peerId, downloadMode ? meta.pieceCount() : 0, dht != null, this, peerConnector);
         }
 
         /** Incoming connection (metadata is always known). */
-        PeerWorker(Socket socket, Handshake theirHandshake) {
+        PeerWorker(PeerAddress address, net.derrek.bt4j.peer.PeerTransport transport, Handshake theirHandshake) {
             this.downloadMode = true;
             this.pex = pexEnabled() ? new PeerExchange(workers::keySet, DefaultTorrentSession.this::onPeersFound, DefaultTorrentSession.this::onPeersDropped) : null;
             this.registry = new ExtensionRegistry(extensions(pex));
             this.connection = PeerConnection.incoming(
-                    socket, theirHandshake, infoHash, peerId, metainfo.pieceCount(), dht != null, this);
+                    address, transport, theirHandshake, infoHash, peerId, metainfo.pieceCount(), dht != null, this);
         }
 
         private List<Extension> extensions(PeerExchange pexOrNull) {

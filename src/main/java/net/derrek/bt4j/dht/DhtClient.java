@@ -73,26 +73,63 @@ public final class DhtClient implements AutoCloseable {
     private volatile DatagramSocket socket;
     private volatile boolean closed;
 
+    /** Sends a KRPC datagram. In shared mode this is a {@code UdpMux}; standalone it is the owned socket. */
+    public interface Sender {
+        void send(byte[] data, java.net.SocketAddress to) throws IOException;
+    }
+
+    private final Sender externalSender; // non-null in shared mode: the socket is owned by a UdpMux
+    private final int externalPort;
+
     /** @param udpPort 0 = assigned by the system */
     public DhtClient(int udpPort, List<InetSocketAddress> bootstrapNodes) {
         this.requestedUdpPort = udpPort;
         this.bootstrapNodes = List.copyOf(bootstrapNodes);
+        this.externalSender = null;
+        this.externalPort = 0;
+    }
+
+    /**
+     * Shared-socket mode: KRPC is sent through {@code sender} and inbound packets are fed via {@link #onDatagram}
+     * (by a {@code UdpMux} that also serves uTP on the same UDP port). No socket of its own is bound.
+     */
+    public DhtClient(int boundPort, List<InetSocketAddress> bootstrapNodes, Sender sender) {
+        this.requestedUdpPort = boundPort;
+        this.bootstrapNodes = List.copyOf(bootstrapNodes);
+        this.externalSender = sender;
+        this.externalPort = boundPort;
     }
 
     /** Start: bind the socket, begin receiving packets, and populate the routing table from bootstrap nodes in the background. */
     public void start() {
-        try {
-            this.socket = new DatagramSocket(requestedUdpPort);
-        } catch (SocketException e) {
-            throw new UncheckedIOException(new IOException("failed to bind DHT UDP port: " + requestedUdpPort, e));
+        if (externalSender == null) {
+            try {
+                this.socket = new DatagramSocket(requestedUdpPort);
+            } catch (SocketException e) {
+                throw new UncheckedIOException(new IOException("failed to bind DHT UDP port: " + requestedUdpPort, e));
+            }
+            Thread.ofVirtual().name("bt4j-dht-recv").start(this::receiveLoop);
         }
-        Thread.ofVirtual().name("bt4j-dht-recv").start(this::receiveLoop);
         Thread.ofVirtual().name("bt4j-dht-bootstrap").start(this::bootstrap);
     }
 
     /** The actually bound UDP port (valid after start). */
     public int port() {
-        return socket.getLocalPort();
+        return externalSender != null ? externalPort : socket.getLocalPort();
+    }
+
+    /** Transmits a datagram through the owned socket or the shared sender. */
+    private void transmit(byte[] data, java.net.SocketAddress to) throws IOException {
+        if (externalSender != null) {
+            externalSender.send(data, to);
+        } else {
+            socket.send(new DatagramPacket(data, data.length, to));
+        }
+    }
+
+    /** Feeds an inbound KRPC datagram (called by a {@code UdpMux} in shared mode). */
+    public void onDatagram(byte[] data, int length, InetSocketAddress from) {
+        handleDatagram(Arrays.copyOf(data, length), from);
     }
 
     public NodeId nodeId() {
@@ -284,7 +321,7 @@ public final class DhtClient implements AutoCloseable {
         byte[] packet = KrpcMessage.encode(new KrpcMessage.Query(
                 transactionId, method, new BValue.BDictionary(args)));
         try {
-            socket.send(new DatagramPacket(packet, packet.length, to));
+            transmit(packet, to);
         } catch (IOException | IllegalArgumentException e) {
             pending.remove(key);
             future.completeExceptionally(e);
@@ -306,30 +343,36 @@ public final class DhtClient implements AutoCloseable {
                 }
                 continue;
             }
-            try {
-                KrpcMessage message = KrpcMessage.decode(Arrays.copyOf(buffer, packet.getLength()));
-                InetSocketAddress from = (InetSocketAddress) packet.getSocketAddress();
-                switch (message) {
-                    case KrpcMessage.Response(byte[] t, BValue.BDictionary r) -> {
-                        if (r.get("id").orElse(null) instanceof BValue.BString(byte[] id) && id.length == 20) {
-                            table.insert(new DhtNode(new NodeId(id), from)); // has responded = live node
-                        }
-                        CompletableFuture<BValue.BDictionary> future = pending.remove(HexFormat.of().formatHex(t));
-                        if (future != null) {
-                            future.complete(r);
-                        }
+            handleDatagram(Arrays.copyOf(buffer, packet.getLength()), (InetSocketAddress) packet.getSocketAddress());
+        }
+    }
+
+    private void handleDatagram(byte[] data, InetSocketAddress from) {
+        if (closed) {
+            return;
+        }
+        try {
+            KrpcMessage message = KrpcMessage.decode(data);
+            switch (message) {
+                case KrpcMessage.Response(byte[] t, BValue.BDictionary r) -> {
+                    if (r.get("id").orElse(null) instanceof BValue.BString(byte[] id) && id.length == 20) {
+                        table.insert(new DhtNode(new NodeId(id), from)); // has responded = live node
                     }
-                    case KrpcMessage.Error(byte[] t, int code, String errorMessage) -> {
-                        CompletableFuture<BValue.BDictionary> future = pending.remove(HexFormat.of().formatHex(t));
-                        if (future != null) {
-                            future.completeExceptionally(new IOException("KRPC error " + code + ": " + errorMessage));
-                        }
+                    CompletableFuture<BValue.BDictionary> future = pending.remove(HexFormat.of().formatHex(t));
+                    if (future != null) {
+                        future.complete(r);
                     }
-                    case KrpcMessage.Query query -> handleQuery(query, from);
                 }
-            } catch (RuntimeException ignored) {
-                // malformed packet: ignore
+                case KrpcMessage.Error(byte[] t, int code, String errorMessage) -> {
+                    CompletableFuture<BValue.BDictionary> future = pending.remove(HexFormat.of().formatHex(t));
+                    if (future != null) {
+                        future.completeExceptionally(new IOException("KRPC error " + code + ": " + errorMessage));
+                    }
+                }
+                case KrpcMessage.Query query -> handleQuery(query, from);
             }
+        } catch (RuntimeException ignored) {
+            // malformed packet: ignore
         }
     }
 
@@ -417,7 +460,7 @@ public final class DhtClient implements AutoCloseable {
 
     private void sendRaw(byte[] data, InetSocketAddress to) {
         try {
-            socket.send(new DatagramPacket(data, data.length, to));
+            transmit(data, to);
         } catch (IOException ignored) {
         }
     }

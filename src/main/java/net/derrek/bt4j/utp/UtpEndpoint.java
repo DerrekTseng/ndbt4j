@@ -28,15 +28,36 @@ public final class UtpEndpoint implements AutoCloseable {
     private static final long TICK_MILLIS = 100;
     private static final long CONNECT_TIMEOUT_MILLIS = 10_000;
 
-    private final DatagramSocket socket;
+    /** Sends a datagram on behalf of the endpoint (a raw socket, or a shared {@code UdpMux}). */
+    public interface Sink {
+        void send(SocketAddress to, byte[] data) throws IOException;
+    }
+
+    private final Sink sink;
+    private final int localPort;
+    private final DatagramSocket ownSocket; // non-null only when this endpoint owns its socket (standalone mode)
     private final Map<String, UtpSocket> connections = new ConcurrentHashMap<>();
     private final LinkedBlockingQueue<UtpSocket> acceptQueue = new LinkedBlockingQueue<>();
     private volatile boolean closed;
 
+    /**
+     * Shared mode: the endpoint sends through {@code sink} and is fed inbound packets via {@link #onDatagram}
+     * (e.g. by a {@code UdpMux} that also serves DHT). Only the retransmission ticker runs here.
+     */
+    public UtpEndpoint(Sink sink, int localPort) {
+        this.sink = sink;
+        this.localPort = localPort;
+        this.ownSocket = null;
+        Thread.ofVirtual().name("bt4j-utp-tick-" + localPort).start(this::tickLoop);
+    }
+
+    /** Standalone mode: the endpoint owns {@code socket}, running both its own receive loop and the ticker. */
     public UtpEndpoint(DatagramSocket socket) {
-        this.socket = socket;
-        Thread.ofVirtual().name("bt4j-utp-recv-" + socket.getLocalPort()).start(this::receiveLoop);
-        Thread.ofVirtual().name("bt4j-utp-tick-" + socket.getLocalPort()).start(this::tickLoop);
+        this.ownSocket = socket;
+        this.localPort = socket.getLocalPort();
+        this.sink = (to, data) -> socket.send(new DatagramPacket(data, data.length, to));
+        Thread.ofVirtual().name("bt4j-utp-recv-" + localPort).start(this::receiveLoop);
+        Thread.ofVirtual().name("bt4j-utp-tick-" + localPort).start(this::tickLoop);
     }
 
     /** Binds a fresh endpoint on the given UDP port (0 = system-assigned). */
@@ -46,7 +67,7 @@ public final class UtpEndpoint implements AutoCloseable {
     }
 
     public int localPort() {
-        return socket.getLocalPort();
+        return localPort;
     }
 
     private static String key(SocketAddress address, int connId) {
@@ -83,7 +104,15 @@ public final class UtpEndpoint implements AutoCloseable {
         if (closed) {
             throw new IOException("uTP endpoint closed");
         }
-        socket.send(new DatagramPacket(data, data.length, remote));
+        sink.send(remote, data);
+    }
+
+    /** Feeds an inbound datagram (called by a {@code UdpMux} in shared mode). */
+    public void onDatagram(byte[] data, int length, InetSocketAddress from) {
+        UtpPacket pkt = UtpPacket.decode(data, length);
+        if (pkt != null) {
+            dispatch(pkt, from, nowMicros());
+        }
     }
 
     private void receiveLoop() {
@@ -91,18 +120,14 @@ public final class UtpEndpoint implements AutoCloseable {
         while (!closed) {
             DatagramPacket datagram = new DatagramPacket(buffer, buffer.length);
             try {
-                socket.receive(datagram);
+                ownSocket.receive(datagram);
             } catch (IOException e) {
                 if (!closed) {
                     LOG.log(System.Logger.Level.DEBUG, () -> "uTP receive stopped: " + e.getMessage());
                 }
                 return;
             }
-            UtpPacket pkt = UtpPacket.decode(datagram.getData(), datagram.getLength());
-            if (pkt == null) {
-                continue; // not a v1 uTP packet
-            }
-            dispatch(pkt, (InetSocketAddress) datagram.getSocketAddress(), nowMicros());
+            onDatagram(datagram.getData(), datagram.getLength(), (InetSocketAddress) datagram.getSocketAddress());
         }
     }
 
@@ -154,6 +179,8 @@ public final class UtpEndpoint implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
-        socket.close();
+        if (ownSocket != null) {
+            ownSocket.close(); // shared mode: the UdpMux owns and closes the socket
+        }
     }
 }

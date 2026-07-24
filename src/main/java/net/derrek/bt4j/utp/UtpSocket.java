@@ -94,7 +94,7 @@ public final class UtpSocket {
         return connIdRecv;
     }
 
-    InetSocketAddress remote() {
+    public InetSocketAddress remote() {
         return remote;
     }
 
@@ -140,7 +140,8 @@ public final class UtpSocket {
             ackNrInitialised = true;
             lastActivityMicros = nowMicros;
             updateReplyMicro(syn, nowMicros);
-            sendState(); // ack the SYN
+            sendState(); // the SYN-ACK state packet carries seq_nr and, uniquely, consumes it (BEP 29 handshake)
+            seqNr = (seqNr + 1) & 0xFFFF; // so our first data packet is one past the value the initiator recorded
         } finally {
             lock.unlock();
         }

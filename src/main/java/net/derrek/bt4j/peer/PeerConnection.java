@@ -7,8 +7,6 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
-import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -29,8 +27,6 @@ public final class PeerConnection implements AutoCloseable {
 
     private static final Logger LOG = System.getLogger(PeerConnection.class.getName());
 
-    private static final int CONNECT_TIMEOUT_MILLIS = 10_000;
-    private static final int READ_TIMEOUT_MILLIS = 150_000;
     private static final int KEEP_ALIVE_IDLE_SECONDS = 110;
 
     /** Connection event callbacks. Invoked on the read-loop thread; implementations must not block for long. */
@@ -53,11 +49,13 @@ public final class PeerConnection implements AutoCloseable {
     private final BlockingQueue<PeerMessage> sendQueue = new LinkedBlockingQueue<>();
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    /** Incoming connection: the pre-accepted socket and the peer's already-read handshake (both null for outgoing). */
-    private final Socket incomingSocket;
+    /** Incoming connection: the pre-accepted transport and the peer's already-read handshake (both null for outgoing). */
+    private final PeerTransport incomingTransport;
     private final Handshake incomingHandshake;
+    /** Outgoing connection: dials the transport (TCP or uTP) on the read thread. Null for incoming. */
+    private final PeerConnector connector;
 
-    private volatile Socket socket;
+    private volatile PeerTransport transport;
     private volatile Thread writeThread;
     private volatile boolean amChoking = true;
     private volatile boolean amInterested = false;
@@ -67,36 +65,43 @@ public final class PeerConnection implements AutoCloseable {
     private Bitfield peerBitfield; // written only on the read-loop thread
 
     private PeerConnection(PeerAddress address, InfoHash infoHash, PeerId localId, int pieceCount,
-                           boolean advertiseDht, Socket incomingSocket, Handshake incomingHandshake,
-                           Listener listener) {
+                           boolean advertiseDht, PeerTransport incomingTransport, Handshake incomingHandshake,
+                           PeerConnector connector, Listener listener) {
         this.address = address;
         this.infoHash = infoHash;
         this.localId = localId;
         this.pieceCount = pieceCount;
         this.advertiseDht = advertiseDht;
-        this.incomingSocket = incomingSocket;
+        this.incomingTransport = incomingTransport;
         this.incomingHandshake = incomingHandshake;
+        this.connector = connector;
         this.listener = listener;
         // pieceCount <= 0: magnet case, metadata unknown; start with a minimal bitfield (replaced when the bitfield message arrives)
         this.peerBitfield = new Bitfield(Math.max(1, pieceCount));
     }
 
-    /** Active outgoing connection. IO begins only after calling {@link #start()} post-construction. */
+    /** Active outgoing connection over TCP. IO begins only after calling {@link #start()} post-construction. */
     public static PeerConnection outgoing(PeerAddress address, InfoHash infoHash, PeerId localId,
                                           int pieceCount, boolean advertiseDht, Listener listener) {
-        return new PeerConnection(address, infoHash, localId, pieceCount, advertiseDht, null, null, listener);
+        return outgoing(address, infoHash, localId, pieceCount, advertiseDht, listener, TcpTransport::connect);
+    }
+
+    /** Active outgoing connection over a caller-chosen transport (TCP or uTP). */
+    public static PeerConnection outgoing(PeerAddress address, InfoHash infoHash, PeerId localId, int pieceCount,
+                                          boolean advertiseDht, Listener listener, PeerConnector connector) {
+        return new PeerConnection(address, infoHash, localId, pieceCount, advertiseDht, null, null, connector, listener);
     }
 
     /**
-     * Passive incoming connection: the caller (BtClient) has already accepted the socket and read the
+     * Passive incoming connection: the caller (BtClient) has already accepted the transport and read the
      * peer's handshake to determine which torrent it belongs to.
      * This connection is responsible for sending back our handshake and entering the message loop.
      */
-    public static PeerConnection incoming(Socket socket, Handshake theirHandshake, InfoHash infoHash,
-                                          PeerId localId, int pieceCount, boolean advertiseDht, Listener listener) {
-        InetSocketAddress remote = (InetSocketAddress) socket.getRemoteSocketAddress();
-        return new PeerConnection(new PeerAddress(remote), infoHash, localId, pieceCount, advertiseDht,
-                socket, theirHandshake, listener);
+    public static PeerConnection incoming(PeerAddress address, PeerTransport transport, Handshake theirHandshake,
+                                          InfoHash infoHash, PeerId localId, int pieceCount, boolean advertiseDht,
+                                          Listener listener) {
+        return new PeerConnection(address, infoHash, localId, pieceCount, advertiseDht,
+                transport, theirHandshake, null, listener);
     }
 
     /** Starts the read/write virtual threads and performs the handshake. Returns immediately. */
@@ -109,30 +114,28 @@ public final class PeerConnection implements AutoCloseable {
             DataInputStream in;
             DataOutputStream out;
             Handshake theirs;
-            if (incomingSocket != null) {
-                Socket s = incomingSocket;
-                this.socket = s;
-                s.setSoTimeout(READ_TIMEOUT_MILLIS);
-                s.setTcpNoDelay(true);
-                in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
-                out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
+            if (incomingTransport != null) {
+                PeerTransport t = incomingTransport;
+                this.transport = t;
+                in = new DataInputStream(new BufferedInputStream(t.inputStream()));
+                out = new DataOutputStream(new BufferedOutputStream(t.outputStream()));
                 // the peer's handshake was already read and its info-hash verified by the caller; send back our handshake
                 out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, true).encode());
                 out.flush();
                 theirs = incomingHandshake;
                 LOG.log(Level.DEBUG, () -> "incoming connection established: " + address);
             } else {
-                Socket s = new Socket();
-                this.socket = s;
                 if (closed.get()) {
-                    s.close();
                     return;
                 }
-                s.connect(resolve(address.socketAddress()), CONNECT_TIMEOUT_MILLIS);
-                s.setSoTimeout(READ_TIMEOUT_MILLIS);
-                s.setTcpNoDelay(true);
-                in = new DataInputStream(new BufferedInputStream(s.getInputStream()));
-                out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream()));
+                PeerTransport t = connector.connect(address);
+                this.transport = t;
+                if (closed.get()) {
+                    t.close();
+                    return;
+                }
+                in = new DataInputStream(new BufferedInputStream(t.inputStream()));
+                out = new DataOutputStream(new BufferedOutputStream(t.outputStream()));
 
                 out.write(Handshake.outgoing(infoHash, localId, advertiseDht, true, true).encode());
                 out.flush();
@@ -216,12 +219,6 @@ public final class PeerConnection implements AutoCloseable {
         }
     }
 
-    private static InetSocketAddress resolve(InetSocketAddress address) {
-        return address.isUnresolved()
-                ? new InetSocketAddress(address.getHostString(), address.getPort())
-                : address;
-    }
-
     /** Sends a message asynchronously (into the write queue). Silently ignored if the connection is already closed. */
     public void send(PeerMessage message) {
         if (!closed.get()) {
@@ -276,12 +273,9 @@ public final class PeerConnection implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
-        Socket s = socket;
-        if (s != null) {
-            try {
-                s.close();
-            } catch (IOException ignored) {
-            }
+        PeerTransport t = transport;
+        if (t != null) {
+            t.close();
         }
         Thread w = writeThread;
         if (w != null) {
